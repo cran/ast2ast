@@ -19,30 +19,31 @@ You should have received a copy of the GNU General Public License along with etr
 If not see: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html#SEC4
 */
 
-#ifndef LOOPING
-#define LOOPING
 
+#ifndef CHECKSNAINF
+#define CHECKSNAINF
 
-#include <functional>
 #include "vec.hpp"
 
 namespace etr {
 
-  template<typename T, typename F>
-  void for_(VEC<T>&& inp, F&&f) {
-    for(auto& i: inp) {
-      f(i);
+VEC<double> is_na(const VEC<double>& inp) {
+    VEC<double> res(inp.size());
+    for(int i = 0; i < res.size(); i++) {
+        res[i] = ISNA(inp[i]);
     }
-  }
+    return res;
+}
 
-  template<typename T, typename F>
-  void for_(VEC<T>& inp, F&&f) {
-    for(auto& i: inp) {
-      f(i);
+VEC<double> is_infinite(const VEC<double>& inp) {
+    VEC<double> res(inp.size());
+    for(int i = 0; i < res.size(); i++) {
+        res[i] = (!R_FINITE(inp[i]) && !ISNA(inp[i]));
     }
-  }
-
+    return res;
+}
 
 }
+
 
 #endif

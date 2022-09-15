@@ -41,8 +41,11 @@ public:
  void operator ++() { ++p; }
 };
 
+
 /*
-class which is only a copy of a pointer or used as vector storing data via pointer
+- Used as interface to R, thus it store data of an SEXP
+- If new is called once delete has to be called in the destructor
+- If new is not called. Then R will delete the memory!
 */
 template<typename T>
 class STORE {
@@ -53,9 +56,25 @@ public:
   int capacity;
   bool todelete;
   bool allocated = false;
-  int cob = 0; //cob = copy, owning, borrow, 0, 1, 2
+  int cob = 0;
 
   // Constructors
+  STORE(SEXP inp) {
+    if(allocated == true) {
+      ass(p != nullptr, "try to delete nullptr");
+      delete [] p;
+      p = nullptr;
+    }
+
+    p = REAL(inp);
+
+    sz = Rf_length(inp);
+    capacity = Rf_length(inp);
+
+    todelete = false;
+    allocated = true;
+  }
+
   STORE(const STORE<T>& other) {
     if(allocated == true) {
       ass(p != nullptr, "try to delete nullptr");
@@ -76,7 +95,6 @@ public:
 
 
   STORE() {
-
     if(allocated == true) {
       ass(p != nullptr, "try to delete nullptr");
       delete [] p;
@@ -101,6 +119,39 @@ public:
     p = new T[n];
     todelete = true;
     allocated = true;
+  }
+
+  STORE(const int n, T* pinp, int cob_) {
+    //ass(false, "do not call!");
+    if(allocated == true) {
+      ass(p != nullptr, "try to delete nullptr");
+      delete [] p;
+      p = nullptr;
+    }
+
+    if(cob_ == 0) { // copy
+      sz = n;
+      capacity = sz;
+      p = new T[n];
+      for(int i = 0; i < sz; i++) {
+        p[i] = pinp[i];
+      }
+      todelete = true;
+      allocated = true;
+    } else if(cob_ == 1) { // owning pointer
+      sz = n;
+      capacity = sz;
+      p = pinp;
+      todelete = true;
+      allocated = true; //?
+    } else if(cob_ == 2) { // borrow pointer
+      sz = n;
+      capacity = sz;
+      p = pinp;
+      todelete = false;
+      allocated = true;
+      cob = 2;
+    }
   }
 
   STORE(const int n, const double value) {
@@ -137,39 +188,6 @@ public:
     allocated = true;
   }
 
-  STORE(const int n, T* pinp, int cob_) {
-
-    if(allocated == true) {
-      ass(p != nullptr, "try to delete nullptr");
-      delete [] p;
-      p = nullptr;
-    }
-
-    if(cob_ == 0) { // copy
-      sz = n;
-      capacity = sz;
-      p = new T[n];
-      for(int i = 0; i < sz; i++) {
-        p[i] = pinp[i];
-      }
-      todelete = true;
-      allocated = true;
-    } else if(cob_ == 1) { // owning pointer
-      sz = n;
-      capacity = sz;
-      p = pinp;
-      todelete = true;
-      allocated = true; //?
-    } else if(cob_ == 2) { // borrow pointer
-      sz = n;
-      capacity = sz;
-      p = pinp;
-      todelete = false;
-      allocated = true;
-      cob = 2;
-    }
-  }
-
   void init(const int n, T* pinp) {
 
         if(allocated == true) {
@@ -191,6 +209,23 @@ public:
 
   }
 
+  void init_sexp(SEXP inp) {
+    
+    if(allocated == true) {
+      ass(p != nullptr, "try to delete nullptr");
+      delete [] p;
+      p = nullptr;
+    }
+
+    p = REAL(inp);
+
+    sz = Rf_length(inp);
+    capacity = Rf_length(inp);
+
+    todelete = false;
+    allocated = true;
+    
+  }
 
   // Destructors
   ~STORE() {
@@ -203,6 +238,7 @@ public:
     }
   }
 
+  // this is difficult
   // move it
   STORE& moveit(STORE<T>& other) {
     T* temporary = other.p;
@@ -255,27 +291,30 @@ public:
   // 1 indexed array
   T& operator[](int pos) const {
     if(pos < 0) {
-      std::cerr << "Error: out of boundaries --> value below 1" << std::endl;
-      Rcpp::stop("Error");
+      Rf_error("Error: out of boundaries --> value below 1");
     } else if(pos >= sz) {
-      std::cerr << "Error: out of boundaries --> value beyond size of vector" << std::endl;
-      Rcpp::stop("Error");
+      Rf_error("Error: out of boundaries --> value beyond size of vector");
     }
     return p[pos];
   }
 
   void resize(int new_size) {
-    ass(cob < 2, "try to delete borrowed pointer");
     if(new_size > sz) {
       if(allocated == true) {
         ass(p != nullptr, "try to delete nullptr");
-        delete [] p;
-        p = nullptr;
+
+        if(todelete == true) {
+          delete [] p;
+          p = nullptr;
+        }
       }
 
       p = new T[static_cast<int>(new_size*1.15)]; //*2
       sz = new_size;
       capacity = static_cast<int>(new_size*1.15); //*2
+
+      todelete = true;
+
     } else {
       sz = new_size;
     }
@@ -283,9 +322,7 @@ public:
   }
 
   void realloc(int new_size) {
-    ass(cob < 2, "try to delete borrowed pointer");
     T* temp;
-    int temp_size;
     temp = new T[sz];
     for(int i = 0; i < sz; i++) {
       temp[i] = p[i];
@@ -302,10 +339,11 @@ public:
     ass(temp != nullptr, "try to delete nullptr");
     delete [] temp;
     temp = nullptr;
+
+    todelete = true;
   }
 
   void push_back(T input) {
-    ass(cob < 2, "try to delete borrowed pointer");
     if(sz == capacity) {
       realloc(sz*2);
       capacity = sz;
@@ -333,6 +371,15 @@ public:
   }
 
 };
+
+
+
+
+
+
+
+
+
 
 }
 

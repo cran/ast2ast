@@ -108,10 +108,10 @@ class VVPLUS {
 private:
   const L& l;
   const R& r;
-  int columns_;
-  int rows_;
   bool ismatrix;
-
+  int rows_;
+  int columns_;
+  
 public:
 
   VVPLUS(const L &a, const R &b, bool ismatrix_, int rows, int cols) : l(a), r(b),
@@ -161,7 +161,11 @@ VEC< T, VVPLUS< T, L, R > > operator+(const VEC<T, L>& a, const VEC<T, R>& b) {
       nrows_ = a.nr();
       ncols_ = a.nc();
     } else {
-      Rcpp::stop("Error");
+      #ifdef RLANG
+        Rcpp::stop("Error");
+      #else
+        exit (EXIT_FAILURE);
+      #endif  
     }
 
   }
@@ -244,8 +248,8 @@ template<typename T, typename L, typename R>
 class SVPLUS {
 
 private:
-  const L& l;
   const R& r;
+  const L& l;
   const bool ismatrix;
   const int nrows;
   const int ncols;
@@ -299,6 +303,10 @@ VEC< T, SVPLUS< T, L, R > > operator+(const R& a, const VEC<T, L>&  b) {
 
   return ret;
 }
+
+
+
+
 
 }
 

@@ -1,3 +1,4 @@
+
 /*
 R package etr
 Copyright (C) 2021 Konrad Krämer
@@ -191,11 +192,20 @@ int length(VEC<T>& inp) {
   return inp.size();
 }
 
+template<typename T2, typename R2> 
+int length(const VEC<T2, R2>& inp) {
+  return inp.size();
+}
+
 template<typename T>
 VEC<double> dim(const VEC<T>& inp) {
   if(inp.im() == false) {
     std::cerr << "dim can only be called with matrix" << std::endl;
-    Rcpp::stop("Error");
+    #ifdef RLANG
+      Rcpp::stop("Error");
+    #else
+      exit (EXIT_FAILURE);
+    #endif
   }
 
   VEC<double> ret(2);
@@ -209,17 +219,29 @@ VEC<double> dim(const VEC<T>& inp) {
 
 void dim(bool inp) {
     std::cerr << "dim can only be called with matrix" << std::endl;
-    Rcpp::stop("Error");
+    #ifdef RLANG
+      Rcpp::stop("Error");
+    #else
+      exit (EXIT_FAILURE);
+    #endif
 }
 
 void dim(int inp) {
     std::cerr << "dim can only be called with matrix" << std::endl;
-    Rcpp::stop("Error");
+    #ifdef RLANG
+      Rcpp::stop("Error");
+    #else
+      exit (EXIT_FAILURE);
+    #endif
 }
 
 void dim(double inp) {
     std::cerr << "dim can only be called with matrix" << std::endl;
-    Rcpp::stop("Error");
+    #ifdef RLANG
+      Rcpp::stop("Error");
+    #else
+      exit (EXIT_FAILURE);
+    #endif  
 }
 
 }

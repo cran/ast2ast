@@ -22,8 +22,26 @@ If not see: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html#SEC4
 #ifndef HEADER_H
 #define HEADER_H
 
-// [[Rcpp::depends(RcppArmadillo)]]
-#include "RcppArmadillo.h"
+// in case for testing from C++
+#ifdef NOT_R
+#else
+  #define RLANG
+#endif
+
+// switching between r fct and external pointer
+#ifdef RFCT
+  #define SEXPINTERFACE
+#else
+  #define FCT_POINTER
+#endif
+
+
+
+
+#ifdef RLANG
+  // [[Rcpp::depends(RcppArmadillo)]]
+  #include "RcppArmadillo.h"
+#endif
 
 #include <iostream>
 #include <iterator>

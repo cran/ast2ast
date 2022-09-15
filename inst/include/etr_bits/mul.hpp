@@ -32,10 +32,10 @@ class VVTIMES {
 private:
   const L& l; //const L& l;
   const R& r; //const R& r;
-  int columns_;
-  int rows_;
   bool ismatrix;
-
+  int rows_;
+  int columns_;
+  
 public:
 
   VVTIMES(const L &a, const R &b, bool ismatrix_, int rows, int cols) : l(a), r(b),
@@ -83,7 +83,11 @@ VEC< T, VVTIMES< T, L, R > > operator*(const VEC<T, L>& a, const VEC<T, R>& b) {
       nrows_ = a.nr();
       ncols_ = a.nc();
     } else {
-      Rcpp::stop("Error");
+      #ifdef RLANG
+        Rcpp::stop("Error");
+      #else
+        exit (EXIT_FAILURE);
+      #endif  
     }
 
   }
@@ -162,8 +166,8 @@ template<typename T, typename L, typename R>
 class SVTIMES {
 
 private:
-  const L& l;
   const R& r;
+  const L& l;
   const bool ismatrix;
   const int nrows;
   const int ncols;

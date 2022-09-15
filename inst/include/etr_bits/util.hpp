@@ -29,10 +29,21 @@ namespace etr {
 // error function --> stop program & show message
 void ass(bool inp, std::string message) {
   if(inp == false) {
-    std::cerr << message << std::endl;
-    Rcpp::stop("Error");
+      Rf_error(message.c_str());
   }
 }
+
+/*
+#ifdef RLANG
+#else
+  namespace Rcpp {
+    void stop(std::string inp) {
+      std::cerr << inp << std::endl;
+      exit (EXIT_FAILURE);
+    }
+  }
+#endif
+*/
 
 /*
 // create range from start to end

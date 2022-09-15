@@ -1,95 +1,16 @@
 ## ----setup, include=FALSE-----------------------------------------------------
 knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
 
-## ---- echo = FALSE, eval = TRUE-----------------------------------------------
-fct <- c(
-"getlength"
-,"getattributes"
-,"is_matrix"
-,"VEC"
-,"at"
-,"d2i"
-,"i2d"
-,"ass"
-,"VVSIN"
-,"sinus"
-,"VVsinh"
-,"sinush"
-,"VVasin"
-,"asinus"
-,"VVCOS"
-,"cosinus"
-,"VVacos"
-,"acosinus"
-,"VVCOSH"
-,"cosinush"
-,"VVtan"
-,"tangens"
-,"VVatan"
-,"atangens"
-,"VVtanh"
-,"tangensh"
-,"VVMINUS"
-,"VSMINUS"
-,"SVMINUS"
-,"VVPLUS"
-,"VSPLUS"
-,"SVPLUS"
-,"VVTIMES"
-,"VSTIMES"
-,"SVTIMES"
-,"VVDIV"
-,"VSDIV"
-,"SVDIV"
-,"subassign"
-,"subset"
-,"It"
-,"STORE"
-,"for_"
-,"li"
-,"cmr"
-,"VVEXP"
-,"VVlog"
-,"ln"
-,"exp"
-,"combine"
-,"coca"
-,"cd"
-,"colon"
-,"length"
-,"dim"
-,"vector"
-,"matrix")
-
-c1 <- fct[1:8]
-c2 <- fct[9:16]
-c3 <- fct[17:24]
-c4 <- fct[25:32]
-c5 <- fct[33:40]
-c6 <- fct[41:48]
-c7 <- fct[49:56]
-c8 <- c(fct[57:58], rep(NA, 6) )
-
-d1 <- data.frame(c1, c2, c3, c4)
-d2 <- data.frame(c5, c6, c7, c8)
-
-row.names(d1) <- NULL
-row.names(d2) <- NULL
-names(d1) <- NULL
-names(d2) <- NULL
-
-kableExtra::kbl(d1, longtable = FALSE)
-kableExtra::kbl(d2, longtable = FALSE)
-
-## ----by reference, eval = TRUE------------------------------------------------
+## ----modify objects, eval = TRUE----------------------------------------------
 f <- function(variable) {
   variable <- 1
 }
 library(ast2ast)
 fetr <- translate(f)
 x <- 10
-output <- byref(fetr, x)
-output
+return_value <- fetr(x)
+print(x)
+print(return_value)
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -135,7 +56,7 @@ output
 #  }
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  vardec(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -210,7 +131,7 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -333,7 +254,7 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -351,7 +272,7 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -368,7 +289,7 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -391,7 +312,7 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -404,7 +325,7 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 
 ## -----------------------------------------------------------------------------
 #  f <- function() {
@@ -421,5 +342,5 @@ output
 #  
 #  library(ast2ast)
 #  fetr <- translate(f)
-#  call_fct(fetr)
+#  fetr()
 

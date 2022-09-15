@@ -24,12 +24,45 @@ LC <- R6::R6Class("LC",
 # fast access via [] which will be replaced by ()
 
       public = list(
-
-       PF = c("=", "<-", "[", "for", "c", ":", "sin", "asin", "sinh", "cos", "acos", "cosh",
-        "tan", "atan", "tanh", "log", "^", "+", "-",
-         "*", "/", "if", "else if", "else", "{", "(",
-        "==", "!=", ">", ">=", "<", "<=", "print", "return", "vector", "matrix", "length", "dim", "cmr", "sub", "exp", "i2d", "at", "&&", "||"), # permitted functions
-
+        
+       R_fct = NULL,
+        
+       PF = c(
+       "::", "=", "<-", "[", "for", "c", ":",
+       "sin", "asin", "sinh", "cos", "acos", "cosh",
+       "tan", "atan", "tanh", "log", "sqrt", "^", "+", "-",
+       "*", "/", "if", "else if", "else", "{", "(",
+       "==", "!=", ">", ">=", "<", "<=", "print", "return",
+       "vector", "matrix", "length", "dim", "cmr",
+       "sub", "exp", "i2d", "at", "&&", "||",
+       "dunif", "punif", "qunif", "runif",
+       "dnorm", "pnorm", "qnorm", "rnorm",
+       "dlnorm", "plnorm", "qlnorm", "rlnorm",
+       "dgamma", "pgamma", "qgamma", "rgamma",
+       "dbeta", "pbeta", "beta", "rbeta",
+       "dnbeta", "pnbeta", "qnbeta", "rnbeta",
+       "is.na", "is.infinite", "Rf_ScalarReal"), # permitted functions
+       
+       namespace_etr = c( # have to be changed to all of the names of etr .....
+         "coca",  "sinus", "asinus", "sinush",
+         "cosinus", "acosinus", "cosinush",
+         "tangens", "atangens", "tangensh",
+         "ln", "sqroott",
+         "print", "vector", "matrix", "length", "dim", "cmr",
+         "exp", "i2d", "at",
+         "dunif_etr", "punif_etr", "qunif_etr", "runif_etr",
+         "dnorm_etr", "pnorm_etr", "qnorm_etr", "rnorm_etr",
+         "dlnorm_etr", "plnorm_etr", "qlnorm_etr", "rlnorm_etr",
+         "dgamma_etr", "pgamma_etr", "qgamma_etr", "rgamma_etr",
+         "dbeta_etr", "pbeta_etr", "beta_etr", "rbeta_etr",
+         "dnbeta_etr", "pnbeta_etr", "qnbeta_etr", "rnbeta_etr",
+         "is_na", "is_infinite", "colon"
+       ),
+       
+       namespace_etr_resolved = function() {
+         paste0("etr::", self$namespace_etr)
+      },
+       
        vars = list(), # variables
        index_vars = list(),
 
@@ -37,10 +70,18 @@ LC <- R6::R6Class("LC",
        code = NULL,
        generic_fct = c("+", "-",
         "*", "/", "if", "else if", "else", "{", "(",
-       "==", "!=", ">", ">=", "<", "<=", "return", "vector", "matrix","length", "dim", "cmr", "exp", "at", "&&", "||"),
+        "==", "!=", ">", ">=", "<", "<=", "vector",
+        "matrix","length", "dim", "cmr", "exp", "at",
+        "&&", "||", "Rf_ScalarReal", "::"),
 
        math = c("sin", "asin", "sinh", "cos", "acos", "cosh",
-        "tan", "atan", "tanh", "log", "^"), # %% function is missing
+        "tan", "atan", "tanh", "log", "^", "sqrt",
+        "dunif", "punif", "qunif", "runif",
+       "dnorm", "pnorm", "qnorm", "rnorm",
+       "dlnorm", "plnorm", "qlnorm", "rlnorm",
+       "dgamma", "pgamma", "qgamma", "rgamma",
+       "dbeta", "pbeta", "beta", "rbeta",
+       "dnbeta", "pnbeta", "qnbeta", "rnbeta"), # %% function is missing
 
        check_assign_subset = NULL,
        found_return = FALSE,
@@ -63,69 +104,88 @@ LC <- R6::R6Class("LC",
           if( (as.name("<-") == fct) || (as.name("=") == fct) ) {
 
             self$check_assign_subset = TRUE
-            p <- assign$new(sexp)
+            p <- assign$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
             self$vars <- c(self$vars, p$get_var_names())
 
           } else if( (deparse(fct) %in% self$generic_fct) ){
             self$check_assign_subset = FALSE
-            p <- generic$new(sexp)
+            p <- generic$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
 
-            if(fct == as.name('return')) {
-              self$found_return = TRUE
-            }
 
+          } else if(as.name("return") == fct) {
+            
+            p <- retur$new(sexp, self$namespace_etr)
+            sexp <- p$convert(self$PF)
+            self$found_return = TRUE
+            
           } else if(as.name("[") == fct) {
 
             #p <- fastaccess$new(sexp)
-            p <- subset$new(sexp, self$check_assign_subset)
+            p <- subset$new(sexp, self$check_assign_subset, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
             self$check_assign_subset = FALSE
 
           } else if(as.name("c") == fct) {
 
-            p <- coca$new(sexp)
+            p <- coca$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
             self$check_assign_subset = FALSE
 
           } else if(as.name(":") == fct) {
 
-            p <- range$new(sexp)
+            p <- range$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
             self$check_assign_subset = FALSE
 
           } else if(deparse(fct) %in% self$math) {
 
-            p <- math$new(sexp)
+            p <- math$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
             self$check_assign_subset = FALSE
 
           } else if(as.name('for') == fct) {
 
-            p <- loop$new(sexp)
+            p <- loop$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
             self$check_assign_subset = FALSE
             self$index_vars <- c(self$index_vars, p$return_index_vars())
 
           } else if(as.name('print') == fct) {
 
-            p <- printer$new(sexp)
+            p <- printer$new(sexp, self$namespace_etr)
             sexp <- p$convert(self$PF)
-            self$vars <- c(self$vars, p$get_var_names())
+            #self$vars <- c(self$vars, p$get_var_names())
+            self$check_assign_subset = FALSE
+
+          } else if(as.name("is.na") == fct) {
+            
+            p <- is_na$new(sexp, self$namespace_etr)
+            sexp <- p$convert(self$PF)
+            #self$vars <- c(self$vars, p$get_var_names())
+            self$check_assign_subset = FALSE
+
+          } else if(as.name("is.infinite") == fct) {
+            
+            p <- is_infinite$new(sexp, self$namespace_etr)
+            sexp <- p$convert(self$PF)
+            #self$vars <- c(self$vars, p$get_var_names())
             self$check_assign_subset = FALSE
 
           } else if(as.name("i2d") == fct) {
             # prevent stack overflow
+          } else if(deparse(fct) %in% self$namespace_etr_resolved()) { 
+            # nothing to do. 
           } else {
-            cat("Error: Sorry not all  functions are supported", "\n")
-            cat("Function: ", fct, " not supported")
+            message("Error: Sorry not all  functions are supported", "\n")
+            message("Function: ", fct, " not supported")
             stop()
           }
 
