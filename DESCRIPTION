@@ -1,8 +1,8 @@
 Package: ast2ast
 Type: Package
 Title: Translates an R Function to a C++ Function
-Version: 0.2
-Date: 2022-08-29
+Version: 0.2.1
+Date: 2022-10-17
 Author: Krämer Konrad [aut, cre]
 Maintainer: Krämer Konrad <konrad_kraemer@yahoo.de>
 BugReports: https://github.com/Konrad1991/ast2ast
@@ -16,6 +16,6 @@ Suggests: knitr, kableExtra, rmarkdown, tinytest, microbenchmark,
 Encoding: UTF-8
 RoxygenNote: 7.2.1
 NeedsCompilation: no
-Packaged: 2022-09-15 08:46:23 UTC; konrad
+Packaged: 2022-10-19 06:29:20 UTC; konrad
 Repository: CRAN
-Date/Publication: 2022-09-15 09:10:16 UTC
+Date/Publication: 2022-10-19 07:25:07 UTC
