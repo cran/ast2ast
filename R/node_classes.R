@@ -158,7 +158,7 @@ PC <- R6::R6Class("PC",
               args_fct = args_fct[c(1,2,3,5, 6)] # scale depends on rate
             } else if(name_of_fct == "qgamma") {
               args_fct = args_fct[c(1,2,3,5, 6)] # scale depends on rate
-            }
+            } 
             
             # check that user only use defined arg names
             check = all(equal_names %in% args_fct)
@@ -233,8 +233,12 @@ generic <- R6::R6Class("generic",
         self$replace_TF()
         self$oaf(var)
         self$change_code()
-        ret <- list()
+
+        if(paste(self$name_fct) == "vector") {
+          self$arguments = unname(self$arguments)
+        }
         
+        ret <- list()
         if(deparse(self$name_fct) %in% self$namespace_etr) {
           ret[[1]] <- as.name(paste0("etr::", self$name_fct))  
         } else {
@@ -284,26 +288,16 @@ retur <- R6::R6Class("retur",
       inherit = PC,
                      
       public = list(
-                     
-         replace_int = function() {
-           for(i in seq_along(self$arguments)) {
-             if(is.atomic(self$arguments[[i]])) {
-               number2 = gsub("[0-9]", "", self$arguments[[i]])
-               number2 = gsub("e", "", number2)
-               number2 = gsub(as.name("+"), "", number2)
-               number2 = gsub("-", "", number2)
-               size2 = nchar(number2)
-               if(is.na(size2)) {
-                 return()
-               }
 
-               if( (size2 == 0) ) {# not optimal for XPtr interface
-                self$arguments[[i]] = str2lang(paste0('Rf_ScalarReal(etr::i2d(', self$arguments[[i]], ') )') )
-               }
-              }
-          }
+        R_fct = NULL,
+
+        initialize = function(node, namespace_etr, R_fct) {
+          self$R_fct = R_fct
+          self$name_fct = node[[1]]
+          self$arguments = node[2:length(node)]
+          self$namespace_etr = namespace_etr
         },
-                       
+                                            
         change_code = function() {
            self$replace_int()
         },
@@ -314,7 +308,6 @@ retur <- R6::R6Class("retur",
              self$replace_TF()
              self$oaf(var)
              self$change_code()
-             self$replace_int()
                          
              ret <- list()
              if(deparse(self$name_fct) %in% self$namespace_etr) {
@@ -322,6 +315,11 @@ retur <- R6::R6Class("retur",
              } else {
                ret[[1]] <- self$name_fct  
              }
+
+             if(self$R_fct) {
+              self$arguments <- str2lang(paste("cpp2R(", self$arguments, ")", collapse = ""))
+             }
+
              ret <- c(ret, self$arguments)
              return(ret)
         }
@@ -335,6 +333,20 @@ subset <- R6::R6Class("subset",
     public = list(
 
       subassign = NULL,
+      
+      only_num = function() {
+        sub_args <- NULL
+        if(length(self$arguments) == 2) {
+          sub_args <- self$arguments[[2]]
+        } else if(length(self$arguments) == 3) {
+          sub_args <- self$arguments[2:length(self$arguments)]  
+        }
+        check <- sapply(sub_args, function(x) {
+          if(!is.numeric(x)) return(FALSE)
+          return(x %% 1 == 0)
+        })
+        return(all(check == TRUE))
+      },
 
       initialize = function(node, subset_or_subassign, namespace_etr) {
         self$subassign = subset_or_subassign
@@ -360,11 +372,14 @@ subset <- R6::R6Class("subset",
           }
         })
 
-
         if(self$subassign == TRUE) {
-            self$name_fct = as.name(paste0("etr::", "subassign"))
+            self$name_fct = as.name(paste0("etr::", "subassign"))  
         } else if(self$subassign == FALSE) {
-          self$name_fct = as.name(paste0("etr::", "subset"))
+          if(self$only_num()) {
+            self$name_fct = as.name(paste0("etr::", "at"))
+          } else {
+            self$name_fct = as.name(paste0("etr::", "subset")) 
+          }
         }
 
       },

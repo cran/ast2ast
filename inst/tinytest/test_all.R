@@ -263,7 +263,9 @@ testall <- function(a, type_test) {
         b <- vector(3, 2)
         a <- a * b
         return(a)
-    } else if(type_test == 7.1) { # c, vector, matrix etc.
+    } 
+  
+    if(type_test == 7.1) { # c, vector, matrix etc.
       a <- c(1, 2, 3)
       b <- c(5, 6, 7)
       c <- c(-100, a, b, 100)
@@ -382,7 +384,9 @@ testall <- function(a, type_test) {
     } else if(type_test == 15.4) {
       a <- sqrt(a)
       return(a)
-    } else if(type_test == 16.1) { # subsetting
+    } 
+    
+    if(type_test == 16.1) { # subsetting
       for(i in 1:length(a)) {
           a[i] = 100
       }
@@ -499,7 +503,9 @@ testall <- function(a, type_test) {
       b <- c(1, 2)
       a[ , b] <- 20
       return(a)
-    } else if(type_test == 16.32) {
+    } 
+  
+    if(type_test == 16.32) {
       a <- matrix(1:9, 3, 3)
       b <- c(1, 3)
       a[b , ] <- 20
@@ -634,7 +640,9 @@ testall <- function(a, type_test) {
       c <- c(1, 2, 3, 2)
       a[c == 2, b+b] <- 20
       return(a)
-    } else if(type_test == 16.61) {
+    } 
+    
+    if(type_test == 16.61) {
       a <- matrix(1:16, 4, 4)
       b <- c(2,4)
       c <- c(1, 2, 3, 2)
@@ -661,7 +669,7 @@ testall <- function(a, type_test) {
       a <- 1:6
       b <- c(4, 4)
       b[1] <- a[2]
-      b[2] <- a[2.5]
+      b[2] <- a[2] #a[2.5]
       return(b)
     } else if(type_test == 16.66) {
       a <- 1:6
@@ -812,7 +820,9 @@ testall <- function(a, type_test) {
       c <- c(1, 1)
       b <- a[1.5, b + c]
       return(b)
-    } else if(type_test == 17.1) {
+    } 
+    
+    if(type_test == 17.1) {
       a <- matrix(1:9, 3, 3)
       b <- c(0, 1)
       c <- c(1, 1)
@@ -962,7 +972,9 @@ testall <- function(a, type_test) {
       a <- matrix(1:9, 3, 3)
       b <- a[, c(1, 2)]
       return(b)
-    } else if(type_test == 17.31) {
+    } 
+    
+    if(type_test == 17.31) {
       a <- matrix(1:9, 3, 3)
       b <- a[c(1, 2), ]
       return(b)
@@ -1135,7 +1147,9 @@ testall <- function(a, type_test) {
       b <- c(1, 3)
       b <- (matrix(1:9, 3, 3) + 0)[b, 2.5]
       return(b)
-    } else if(type_test == 19.32) {
+    } 
+    
+    if(type_test == 19.32) {
       b <- (matrix(1:9, 3, 3) + 0)[TRUE, TRUE]
       return(b)
     } else if(type_test == 19.33) {
@@ -1426,7 +1440,7 @@ testall <- function(a, type_test) {
 }
 
 fct <- function() { # function then one can use document outline to jump to this position
-  test <- translate(testall, verbose = FALSE)
+  test <- translate(testall, verbose = FALSE, getsource = FALSE)
 }
 test <- fct()
 # random values
