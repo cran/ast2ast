@@ -1,4 +1,4 @@
-247d0c8e6d8af566f4fc64c179aef68b *DESCRIPTION
+145a9e4e4fb1bff991c2a7bc93538f52 *DESCRIPTION
 d19cfe18912803469c74d8e5f4631967 *NAMESPACE
 8e0dcd45e0de7d2421c18c8e569091f3 *NEWS
 9447611bdd0943880b2e4a83538dbce9 *R/codelinesclass.R
@@ -7,7 +7,7 @@ ce0513ad2377e0746e2af1baef5f8e25 *R/jacobian.R
 21e0813bbe533733e8cdd34a1c44cc97 *R/masterclass.R
 f782ef6226da3f333f895dd4966581c9 *R/node_classes.R
 ea4b4f330d06abed3488805b634e0c3c *R/translate.R
-93690c8530c73bb6d3863324190e966b *build/vignette.rds
+dd2cb54ad14757e741928484b7ec0ad6 *build/vignette.rds
 4e7e1435af793581b90f87a9a46acbcd *inst/doc/DetailedDocumentation.R
 def887b7654b0ffccc94619f0d1a750c *inst/doc/DetailedDocumentation.Rmd
 2688d1136ec07f3b2a41432090d276ee *inst/doc/DetailedDocumentation.html
@@ -34,7 +34,7 @@ dbefb7edbeb32f5914924fa47aab696b *inst/include/etr_bits/print.hpp
 b0b0352070a5bf4936c0e06eb6818710 *inst/include/etr_bits/subsetassign.hpp
 14d62a17f7fc7a1533bcc47299fe3251 *inst/include/etr_bits/subtract.hpp
 24ad533d50abbb91b74ce0bc5d3e3294 *inst/include/etr_bits/trigo.hpp
-3e365fdbe43fd2b5d1c2844993189a27 *inst/include/etr_bits/util.hpp
+8c720a95f4495bb469441f6ed7a48f0a *inst/include/etr_bits/util.hpp
 e2e2fe04cc958fd491cd2793040dc4e3 *inst/include/etr_bits/vec.hpp
 450658e279ded320a34daa047d87f114 *inst/include/type_ast2ast.hpp
 0aee66d0317a17d6928cc5aa5068ec90 *inst/tinytest/test_all.R
