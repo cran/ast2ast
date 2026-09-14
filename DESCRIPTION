@@ -1,22 +1,27 @@
 Package: ast2ast
 Type: Package
 Title: Translates an R Function to a C++ Function
-Version: 0.3.2
-Date: 2023-12-09
-Author: Krämer Konrad [aut, cre]
+Version: 1.0
+Date: 2026-09-01
+Authors@R: c(person(given = "Krämer",
+      family = "Konrad",
+      role = c("aut", "cre"),
+      email = "konrad_kraemer@yahoo.de"))
 Maintainer: Krämer Konrad <konrad_kraemer@yahoo.de>
-BugReports: https://github.com/Konrad1991/ast2ast
+BugReports: https://github.com/Konrad1991/ast2ast/issues
 URL: https://github.com/Konrad1991/ast2ast
 Description: Enable translation of a tiny subset of R to C++. The user has to define a R function which gets translated. For a full list of possible functions check the documentation. After translation an R function is returned which is a shallow wrapper around the C++ code. Alternatively an external pointer to the C++ function is returned to the user. The intention of the package is to generate fast functions which can be used as ode-system or during optimization. 
-License: GPL-2
-Imports: Rcpp (>= 1.0.4), purrr, R6, RcppArmadillo, methods, dfdr,
-        rlang
+License: GPL-3
+Imports: Rcpp (>= 1.0.4), R6, methods
+LinkingTo: Rcpp
+Depends: R (>= 4.1.0)
+SystemRequirements: GNU make, C++20, Rtools (>= 4.5) on Windows
+NeedsCompilation: yes
 VignetteBuilder: knitr
 Suggests: knitr, kableExtra, rmarkdown, tinytest, microbenchmark,
-        ggplot2, RcppXPtrUtils
+        ggplot2, RcppXPtrUtils, pkgbuild, nnls
 Encoding: UTF-8
-RoxygenNote: 7.2.1
-NeedsCompilation: no
-Packaged: 2023-12-09 12:00:16 UTC; konrad
+Packaged: 2026-09-04 05:30:21 UTC; konrad
+Author: Krämer Konrad [aut, cre]
 Repository: CRAN
-Date/Publication: 2023-12-09 16:20:02 UTC
+Date/Publication: 2026-09-14 15:00:10 UTC

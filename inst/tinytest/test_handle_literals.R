@@ -1,0 +1,50 @@
+library(tinytest)
+library(ast2ast)
+
+expect_equal(ast2ast:::determine_literal_type(1), "numeric")
+expect_equal(ast2ast:::determine_literal_type(1.2), "numeric")
+expect_equal(ast2ast:::determine_literal_type(1e10), "scientific")
+expect_equal(ast2ast:::determine_literal_type(1L), "integer")
+expect_equal(ast2ast:::determine_literal_type(TRUE), "logical")
+expect_equal(ast2ast:::determine_literal_type(NA), "NA")
+expect_equal(ast2ast:::determine_literal_type(NaN), "NaN")
+expect_equal(ast2ast:::determine_literal_type(Inf), "Inf")
+
+expect_equal(ast2ast:::t_literal("print", 1, "", "numeric", TRUE, "etr::Double"), "etr::Double(1.0)")
+expect_equal(ast2ast:::t_literal("<-", 1, "", "numeric", TRUE, "etr::Double"), "etr::Double(1.0)")
+
+expect_equal(ast2ast:::t_literal("<-", 1L, "", "integer", TRUE, "etr::Double"), "etr::Integer(1)")
+expect_equal(ast2ast:::t_literal("print", 1L, "", "integer", TRUE, "etr::Double"), "etr::Integer(1)")
+expect_equal(ast2ast:::t_literal("<-", 1, "", "integer", TRUE, "etr::Double"), "etr::Integer(1)")
+
+expect_equal(ast2ast:::t_literal("<-", TRUE, "", "logical", TRUE, "etr::Double"), "etr::Logical(true)")
+expect_equal(ast2ast:::t_literal("print", TRUE, "", "logical", TRUE, "etr::Double"), "etr::Logical(true)")
+expect_equal(ast2ast:::t_literal("<-", T, "", "logical", TRUE, "etr::Double"), "etr::Logical(true)")
+expect_equal(ast2ast:::t_literal("print", T, "", "logical", TRUE, "etr::Double"), "etr::Logical(true)")
+expect_equal(ast2ast:::t_literal("<-", FALSE, "", "logical", TRUE, "etr::Double"), "etr::Logical(false)")
+expect_equal(ast2ast:::t_literal("print", FALSE, "", "logical", TRUE, "etr::Double"), "etr::Logical(false)")
+expect_equal(ast2ast:::t_literal("<-", F, "", "logical", TRUE, "etr::Double"), "etr::Logical(false)")
+expect_equal(ast2ast:::t_literal("print", F, "", "logical", TRUE, "etr::Double"), "etr::Logical(false)")
+
+expect_equal(ast2ast:::t_literal("<-", NA, "", "NA", TRUE, "etr::Double"), "etr::Double::NA()")
+expect_equal(ast2ast:::t_literal("print", NA, "", "NA", TRUE, "etr::Double"), "etr::Double::NA()")
+expect_equal(ast2ast:::t_literal("<-", NaN, "", "NaN", TRUE, "etr::Double"), "etr::Double::NaN()")
+expect_equal(ast2ast:::t_literal("print", NaN, "", "NaN", TRUE, "etr::Double"), "etr::Double::NaN()")
+expect_equal(ast2ast:::t_literal("<-", Inf, "", "Inf", TRUE, "etr::Double"), "etr::Double::Inf()")
+expect_equal(ast2ast:::t_literal("print", Inf, "", "Inf", TRUE, "etr::Double"), "etr::Double::Inf()")
+
+f <- function() {
+  a <- NULL
+  print(a)
+  print(NULL)
+}
+expect_error(ast2ast::translate(f), pattern = "NULL is not supported")
+
+# NULL as a bare block statement (not wrapped in an assignment or a call) --
+# exercises literal_node's own stringify_error_line(), used directly by
+# block_node when a top-level statement itself carries the error.
+f <- function() {
+  NULL
+  return(1)
+}
+expect_error(ast2ast::translate(f), pattern = "NULL is not supported")

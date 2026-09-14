@@ -359,514 +359,131 @@ display: none;
 body {
 text-align: justify}
 </style>
-<ul>
-<li><a href="#information-for-package-authors">Information for Package
-authors</a></li>
-<li><a href="#variables">Variables</a></li>
-<li><a href="#how-to-use-ast2ast">How to use ast2ast</a></li>
-<li><a href="#rcpp-interface">Rcpp Interface</a></li>
-<li><a href="#rcpparmadillo-interface">RcppArmadillo Interface</a></li>
-<li><a href="#pointer-interface">Pointer Interface</a></li>
-</ul>
-<div id="information-for-package-authors" class="section level2">
-<h2>Information for Package authors</h2>
+<div id="guidance-for-package-authors" class="section level2">
+<h2>Guidance for Package Authors</h2>
 <p>This section of the documentation describes how the external pointers
-produced by <em>ast2ast</em> can be used in other packages. This
-information is intended for package authors who want to use
-<em>ast2ast</em> to enable a simple user interface as it is not
-necessary anymore for the user to write C++. The R code is translated to
-a modified version of an expression template library called <em>ETR</em>
-(<a href="https://github.com/Konrad1991/ETR" class="uri">https://github.com/Konrad1991/ETR</a>) which tries to mimic
-R.<br />
-As a side note all classes and functions can be found in the namespace
-<em>etr</em>.</p>
+to C++ function that are produced by <em>ast2ast</em> can be used in
+other packages. This information is intended for package authors who
+want to use the translated functions within their own code.
+Additionally, this section endeavors to present pertinent implementation
+details, providing valuable insights into the inner workings of the
+process.</p>
 </div>
-<div id="variables" class="section level2">
-<h2>Variables</h2>
-<p>The core class object is named VEC<T> and can be initialized with any
-type. Furthermore, is a typedef defined for VEC<double> called
-<em>sexp</em> alluding to the fact that all R objects are <em>SEXP</em>
-objects at C level. This class contains another class called STORE<T>
-which manages memory. To do this a raw pointer of the form <em>T*</em>
-is used. Thus, all objects are located at the heap. Beyond that, it is
-important that no static methods are implemented or that memory is
-associated with functions or global variables. Therefore, the VEC<T>
-objects can be used in parallel. However, the user has to take care that
-only one thread edits an object at a time. VEC<double> a.k.a.
-<em>sexp</em> can be converted to Rcpp::NumericVectors,
-Rcpp::NumericMatrices, arma::vec and arma::mat or to SEXP. Moreover, it
-is also possible to copy the data from Rcpp::NumericVectors,
-Rcpp::NumericMatrices, arma::vec or arma::mat to a <em>sexp</em>
-variable. The constructors and the <em>operator=</em> are implemented
-for this conversions. It is possible to construct a <em>sexp</em> object
-by using a <em>double*</em> pointer and a size information (= int). The
-information about the Rcpp-, RcppArmadillo- and pointer-interface is
-explained in depth in the sections below.</p>
-<p>If the user creates an R function all input arguments are of type
-<em>SEXP</em>. Furthermore, is the output always of type <em>SEXP</em>.
-Beyond that, there exists the possibility to create a function returning
-an external pointer to the C++ function. If using this interface the
-parameter passed to the function can be of one of the following types as
-long as an <em>sexp</em> object is defined as argument for the
-function.</p>
-<ul>
-<li>double</li>
-<li>SEXP</li>
-<li>sexp</li>
-<li>Rcpp::NumericVector or NumericVector</li>
-<li>Rcpp::NumericMatrix or NumericMatrix</li>
-<li>arma::vec or vec</li>
-<li>arma::mat or mat</li>
-</ul>
-<p><strong>The variables are directly converted to sexp thereby copying
-the memory. Thus, the variable can not be used if an function expects a
-reference of type <em>sexp</em></strong> <strong>If the aim is to modify
-a variable by the user function it is only possible to pass directly a
-<em>sexp</em> objects by reference. See the example below here a is
-modified whereas b is copied and thus not altered. The vector <em>v</em>
-can only be used for the second argument of the function
-<em>foo</em>.</strong></p>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast)]] 
-// [[Rcpp::depends(RcppArmadillo)]] 
-// [[Rcpp::plugins(cpp17)]] 
-#include &quot;etr.hpp&quot;
-using namespace Rcpp;
-using namespace etr;
-
-void foo(sexp&amp; a, sexp b) {
-  a = b + 1;
-  b = 1;
-}
-
-// [[Rcpp::export]]
-void call_fct() {
-  sexp a = coca(1, 2, 3);
-  sexp b = coca(1, 2, 3);
-  foo(a, b);
-  print(a);
-  print(b);
-  
-  Numeric
-}
-</code></pre>
-<p>Beyond that using “XPtr” as <em>output</em> argument of the function
-translate it is possible to specify <strong>ptr_vec</strong> or a
-<strong>ptr_mat</strong> as desired types. If these types are used sexp
-objects are created which form a shallow wrapper around these pointers.
-See an example below how this works.</p>
-<ol style="list-style-type: decimal">
-<li>a Rcpp function is created which calls the translated R code:</li>
-</ol>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast)]] 
-// [[Rcpp::depends(RcppArmadillo)]] 
-// [[Rcpp::plugins(cpp17)]] 
-#include &quot;etr.hpp&quot;
-
-#include &lt;Rcpp.h&gt;
-using namespace Rcpp;
-
-typedef sexp (*fct_ptr) (double* a_double_ptr, int a_int_size);
-
-// [[Rcpp::export]]
-Rcpp::NumericVector fcpp(XPtr&lt;fct_ptr&gt; f) {
-  fct_ptr fct = *f;
-  
-  int size = 10;
-  double* ptr = new double[size];
-  for(int i = 0; i &lt; size; i++) {
-    ptr[i] = static_cast&lt;double&gt;(i);
+<div id="naming-rationalization-ast2ast" class="section level2">
+<h2>Naming rationalization ast2ast</h2>
+<p>The nomenclature of the package, ast2ast, is rooted in the
+abbreviation <em>ast</em>, signifying abstract syntax tree. Originally I
+planned to convert the abstract syntax tree of R to the C++ tree as the
+literature recommended for transpilers. However, through iterative
+refinement, a more optimal methodology emerged. The development
+incorporated an Expression Template Library in C++ known as ETR,
+meticulously crafted to mimic R. Thus, R code is translated into ETR
+code, which is subsequently compiled. The original ETR library is
+accessible at <a href="https://github.com/Konrad1991/ETR" class="uri">https://github.com/Konrad1991/ETR</a>. It’s imperative to
+note that the version integrated into ast2ast has undergone substantial
+enhancements, amplifying its efficacy and adaptability.</p>
+</div>
+<div id="comparison-of-r-and-etr-code" class="section level2">
+<h2>Comparison of R and ETR code</h2>
+<p>Displayed below is a basic bubble sort function implemented in R on
+the left, juxtaposed with its ETR counterpart on the right. It is
+obvious that the two code snippets are quite similar. Remarkably, the
+overall structure of the R code remains unaltered. Instead, the
+substitution of individual functions with their ETR equivalents forms
+the crux of the transformation.<br />
+In the C++ code, all functions are located in the <em>etr</em>
+namespace. Certain functions share identical names in both R and C++,
+such as the <em>length</em> function. To mitigate potential conflicts,
+these calls are modified to explicitly reference the etr namespace,
+resulting in expressions like <em>etr::length</em>. Other functions as
+for example <em><code>:</code></em> and <em><code>[</code></em> cannot
+be defined in C++ (at least not in the way they are used in R) therefore
+they are replaced by functions with new names e.g. <em>etr::colon</em>
+and <em>etr::subset</em>.<br />
+Additionally, C++ necessitates explicit declaration of variable types.
+The argument <code>a</code> keeps the vector type <em>Array&lt;Double,
+Buffer<Double>&gt;</em>, while <code>size</code> and <code>temp</code>
+are inferred as scalars (<em>etr::Integer</em> and <em>etr::Double</em>
+respectively), since <code>length()</code> and single-element subsetting
+both produce scalars. A detailed explanation is deferred to the
+subsequent section.</p>
+<pre class="r numberLines"><code>bubbleSort &lt;- function(a) {
+  size &lt;- length(a)
+  for (i in 1:size) {
+    for (j in 1:(size - 1)) {
+      if (a[j] &gt; a[j + 1]) {
+        temp &lt;- a[j]
+        a[j] &lt;- a[j + 1]
+        a[j + 1] &lt;- temp
+      }
+    }
   }
-  
-  Rcpp::NumericVector ret = fct(ptr, size);
-
-  delete[] ptr;
-
-  return ret;
+  return(a)
 }</code></pre>
-<ol start="2" style="list-style-type: decimal">
-<li>a R function is defined and translated (not shown):</li>
-</ol>
-<pre class="r"><code>f &lt;- function(a) {
-  d_db = 1
-  ret &lt;- a + 2 + d_db
-  return(ret)
-}</code></pre>
-<ol start="3" style="list-style-type: decimal">
-<li>The translated R function has the following code:</li>
-</ol>
-<pre class="cpp"><code>SEXP f(double* a_double_ptr, int a_int_size ) {
-
-double d_db;
-sexp ret;
-sexp a(a_int_size, a_double_ptr, 2);
-d_db = etr::i2d(1);
-ret = a + etr::i2d(2) + d_db;
-return(ret);
-}</code></pre>
-</div>
-<div id="how-to-use-ast2ast" class="section level2">
-<h2>How to use ast2ast</h2>
-<p>In this paragraph, a basic example demonstrates how to write the R
-code, translate it and call it from C++. Particular emphasis is placed
-on the C++ code. First of all, the R function is defined which accepts
-one argument called <em>a</em>, adds two to <em>a</em> and stores it
-into <em>b</em>. The variable <em>b</em> is returned at the end of the
-function. The R function called <em>f</em> is translated to an external
-pointer to the <em>C++</em> function.</p>
-<pre class="r"><code>f &lt;- function(a) {
-  b &lt;- a + 2
-  return(b)
-}  
-library(ast2ast)
-f_cpp &lt;- translate(f, output = &quot;XPtr&quot;, types_of_args = &quot;sexp&quot;, return_type = &quot;sexp&quot;)</code></pre>
-<p>The C++ function depends on RcppArmadillo and ast2ast therefore the
-required macros and headers were included. Moreover, <em>ETR</em>
-requires std=c++17 therefore the corresponding plugin is added. The
-function <em>getXPtr</em> is defined and is the function which is
-returned. In the last 5 lines, the translated code is depicted. The
-function <em>f</em> returns a <em>sexp</em> and gets one argument of
-type <em>sexp</em> called <em>a</em>. The body of the function looks
-almost identical to the R function. Except that the variable <em>b</em>
-is defined in the first line of the body with the type <em>sexp</em>.
-The function <em>i2d</em> converts an integer to a double variable. This
-is necessary since C++ would identify the <em>2</em> as an integer which
-is not what the user wants in this case.</p>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast, RcppArmadillo)]]
-#include &lt;RcppArmadillo.h&gt;
-#include &lt;Rcpp.h&gt;
-// [[Rcpp::plugins(cpp17)]]
-using namespace Rcpp;
-using namespace etr;
-#include &lt;etr.hpp&gt;
-// [[Rcpp::export]]
-SEXP getXPtr();
-
-sexp f(sexp a) {
-  sexp b;
-  b = a + i2d(2);
-  return(b);
-}</code></pre>
-<p>Afterwards, the translated R function has to be used in C++ code.
-This would be your package code for example. First, the macros were
-defined for <em>RcppArmadillo</em> and <em>ast2ast</em>. Subsequently,
-the necessary header files were included. As already mentioned
-<em>ast2ast</em> requires std=c++17 thus the required plugin is
-included. To use the function, it is necessary to dereference the
-pointer. The result of the dereferenced pointer has to be stored in a
-function pointer. Later the function pointer can be used to call the
-translated function. Therefore, a function pointer called <em>fp</em> is
-defined. It is critical that the signature of the function pointer
-matches the one of the translated function. Perhaps it would be a good
-idea to check the R function before it is translated. After defining the
-function pointer, a function is defined which is called later by the
-user (called <em>call_package</em>). This function accepts the external
-pointer. Within the function body, a variable <em>f</em> is defined of
-type <em>fp</em> and <em>inp</em> is assigned to it. Next, a
-<em>sexp</em> object called <em>a</em> is defined which stores a vector
-of length 3 containing 1, 2 and 3. The function <em>coca</em> is
-equivalent to the <em>c</em> function R. Afterwards <em>a</em> is
-printed. Followed by the call of the function <em>f</em> and storing the
-result in <em>a</em>. The variable <em>a</em> is printed again to show
-that the values are changed according to the code defined in the R
-function.</p>
-<pre class="cpp"><code>// [[Rcpp::depends(RcppArmadillo, ast2ast)]]
+<pre class="cpp numberLines"><code>#include &lt;Rcpp.h&gt;
+// [[Rcpp::depends(ast2ast)]]
+// [[Rcpp::plugins(cpp2a)]]
 #include &quot;etr.hpp&quot;
-// [[Rcpp::plugins(&quot;cpp17&quot;)]]
-typedef sexp (*fp)(sexp a);
-using namespace etr;
-
 // [[Rcpp::export]]
-void call_package(Rcpp::XPtr&lt;fp&gt; inp) {
-  fp f = *inp;
-  sexp a = coca(1, 2, 3);
-  print(a);
-  a = f(a);
-  print(&quot;a is now:&quot;);
-  print(a);
+SEXP bubbleSort(SEXP aSEXP) {
+  etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt; a = aSEXP;
+  etr::Integer size;
+  etr::Double temp;
+  size = etr::length(a);
+  for (const auto i : etr::colon(etr::Double(1.0), size)) {
+    for (const auto j : etr::colon(etr::Double(1.0), (size - etr::Double(1.0)))) {
+      if (etr::subset(a, j) &gt; etr::subset(a, j + etr::Double(1.0))) {
+        temp = etr::subset(a, j);
+        etr::subset(a, j) = etr::subset(a, j + etr::Double(1.0));
+        etr::subset(a, j + etr::Double(1.0)) = temp;
+      }
+    }
+  }
+  return(etr::Cast(a));
 }</code></pre>
-<p>The user can call now the package code and pass the R function to it.
-Thus, the user only has to install the compiler or Rtools depending on
-the operating system. But it is not necessary to write the function in
-Rcpp.</p>
-<pre class="r"><code>call_package(f_cpp)</code></pre>
-<pre><code>## 1
-## 2
-## 3
-## a is now:
-## 3
-## 4
-## 5</code></pre>
+<div id="the-xptr-interface" class="section level3">
+<h3>The XPtr interface</h3>
+<p>The XPtr interfaces creates an external pointer which can be used in
+other C++ programs.</p>
+<div id="first-one-creates-the-external-pointer-of-the-r-function." class="section level4">
+<h4>First, one creates the external pointer of the R function.</h4>
+<pre class="r"><code>f &lt;- function(a, b) {
+  argtypes(
+    a |&gt; type(vec(double)) |&gt; ref(),
+    b |&gt; type(vec(double)) |&gt; ref()
+  )
+  c &lt;- a + b
+  return(c)
+}
+fcpp &lt;- ast2ast::translate(f, output = &quot;XPtr&quot;)</code></pre>
 </div>
-<div id="rcpp-interface" class="section level2">
-<h2>Rcpp Interface</h2>
-<p>In the last section, the usage of <em>ast2ast</em> was described.
-However, only <em>sexp</em> variables were defined. Which are most
-likely not used in your package. Therefore interfaces to common
-libraries are defined. First of all, <em>ast2ast</em> can communicate
-with Rcpp which alleviates working with the library substantially. The
-code below shows that it is possible to pass a <em>sexp</em> object to a
-variable of type <em>NumericVector</em> or <em>NumericMatrix</em> and
-<em>vice versa</em>. Here, the data is always copied.</p>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast, RcppArmadillo)]]
-#include &lt;RcppArmadillo.h&gt;
-#include &lt;Rcpp.h&gt;
-// [[Rcpp::plugins(cpp17)]]
-using namespace Rcpp;
-#include &lt;etr.hpp&gt;
-using namespace etr;
+<div id="afterwards-the-external-pointer-is-used-in-an-r-package" class="section level4">
+<h4>Afterwards the external pointer is used in an R package</h4>
+<pre class="cpp"><code>#include &lt;Rcpp.h&gt;
+// [[Rcpp::depends(ast2ast)]]
+// [[Rcpp::plugins(cpp2a)]]
+#include &quot;etr.hpp&quot;
 
+typedef etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt; (*FP)(etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt;&amp; a, etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt;&amp; b);
 
 // [[Rcpp::export]]
-void fct() {
-  // NumericVector to sexp
-  NumericVector a{1, 2};
-  sexp a_ = a;
-  print(a_);
-  
-  // sexp to NumericVector
-  sexp b_ = coca(3, 4);
-  NumericVector b = b_;
-  Rcpp::Rcout &lt;&lt; b &lt;&lt; std::endl;
-  
-  // NumericMatrix to sexp
-  NumericMatrix c(3, 3);
-  sexp c_ = c;
-  print(c_);
-  
-  // sexp to NumericMatrix
-  sexp d_ = matrix(colon(1, 16), 4, 4);
-  NumericMatrix d = d_;
-  Rcpp::Rcout &lt;&lt; d &lt;&lt; std::endl;
+void call_xptr(Rcpp::XPtr&lt;FP&gt; ep) {
+  FP f = *ep;
+  etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt; a;
+  etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt; b;
+  etr::Array&lt;etr::Double, etr::Buffer&lt;etr::Double&gt;&gt; c;
+a = etr::c(etr::Double(1), etr::Double(2), etr::Double(3));
+b = etr::c(etr::Double(4), etr::Double(5), etr::Double(6));
+  c = f(a, b);
+  etr::print(c);
 }</code></pre>
-<pre class="r"><code>trash &lt;- fct()</code></pre>
-<pre><code>## 1
-## 2
-## 3 4
-## 0    0   0   
-## 0    0   0   
-## 0    0   0   
-## 1.00000 5.00000 9.00000 13.0000
-## 2.00000 6.00000 10.0000 14.0000
-## 3.00000 7.00000 11.0000 15.0000
-## 4.00000 8.00000 12.0000 16.0000</code></pre>
 </div>
-<div id="rcpparmadillo-interface" class="section level2">
-<h2>RcppArmadillo Interface</h2>
-<p>Besides Rcpp types, <em>sexp</em> objects can transfer data to
-<em>RcppArmadillo</em> objects and it is also possible to copy the data
-from <em>RcppArmadillo</em> types to <em>sexp</em> objects using the
-operator <em>=</em>. The code below shows that it is possible to pass a
-<em>sexp</em> object to a variable of type <em>vec</em> or <em>mat</em>
-and <em>vice versa</em>. Here the data is always copied.</p>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast, RcppArmadillo)]]
-#include &lt;RcppArmadillo.h&gt;
-#include &lt;Rcpp.h&gt;
-// [[Rcpp::plugins(cpp17)]]
-using namespace arma;
-#include &lt;etr.hpp&gt;
-using namespace etr;
-
-// [[Rcpp::export]]
-void fct() {
-  // vec to sexp
-  arma::vec a(4, fill::value(30.0));
-  sexp a_ = a;
-  print(a_);
-  
-  // sexp to vec
-  sexp b_ = coca(3, 4);
-  vec b = b_;
-  b.print();
-  
-  // mat to sexp
-  mat c(3, 3, fill::value(31.0));
-  sexp c_ = c;
-  print(c_);
-  
-  // sexp to mat
-  sexp d_ = matrix(colon(1, 16), 4, 4);
-  mat d = d_;
-  d.print();
-}</code></pre>
-<pre class="r"><code>trash &lt;- fct()</code></pre>
-<pre><code>## 30
-## 30
-## 30
-## 30
-##    3.0000
-##    4.0000
-## 31   31  31  
-## 31   31  31  
-## 31   31  31  
-##     1.0000    5.0000    9.0000   13.0000
-##     2.0000    6.0000   10.0000   14.0000
-##     3.0000    7.0000   11.0000   15.0000
-##     4.0000    8.0000   12.0000   16.0000</code></pre>
+<div id="call-the-function-from-the-r-package" class="section level4">
+<h4>call the function from the R package</h4>
+<pre class="r"><code>call_xptr(fcpp)</code></pre>
+<pre><code>## 5    7   9   </code></pre>
 </div>
-<div id="pointer-interface" class="section level2">
-<h2>Pointer Interface</h2>
-<p>You can pass the information of data stored on heap to a
-<em>sexp</em> object. The constructor for type vector accepts 3
-arguments:</p>
-<ul>
-<li><em>int</em> defining the size of the data.</li>
-<li>a pointer (<em>T*</em>) to the data</li>
-<li><em>int</em> called cob (copy, ownership, borrow).</li>
-</ul>
-<p>The constructor for the type matrix accepts 4 arguments:</p>
-<ul>
-<li><em>int</em> defining number of rows</li>
-<li><em>int</em> defining number of cols</li>
-<li>a pointer (<em>T*</em>) to the data</li>
-<li><em>int</em> called cob (copy, ownership, borrow).</li>
-</ul>
-<p>If cob is 0 then the data is copied. Else if cob is 1 then the
-pointer itself is copied. Meaning that the ownership is transferred to
-the <em>sexp</em> object and the user should not call delete [] on the
-pointer. Be aware that only one <em>sexp</em> variable can take
-ownership of one vector otherwise the memory is double freed. Else if
-cob is 2 the ownership of the pointer is only borrowed. Meaning that the
-<em>sexp</em> object cannot be resized. The user is responsible for
-freeing the memory! The code below shows how the pointer interface works
-in general. Showing how <em>sexp</em> objects can be created by passing
-the information of pointers (<em>double*</em>) which hold data on the
-heap. Currently, only constructors are written which can use the pointer
-interface.</p>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast, RcppArmadillo)]]
-#include &lt;RcppArmadillo.h&gt;
-#include &lt;Rcpp.h&gt;
-// [[Rcpp::plugins(cpp17)]]
-using namespace arma;
-#include &lt;etr.hpp&gt;
-using namespace etr;
-
-// [[Rcpp::export]]
-void fct() {
-    int size = 3;
-    
-    // copy
-    double* ptr1;
-    ptr1 = new double[size];
-    int cob = 0;
-    sexp a(size, ptr1, cob); 
-    delete [] ptr1;
-    a = vector(3.14, 5);
-    print(a);
-    
-    print();
-    
-    // take ownership
-    double* ptr2;
-    ptr2 = new double[size];
-    cob = 1;
-    sexp b(size, ptr2, cob); 
-    b = vector(5, 3);
-    print(b);
-    
-    print();
-    
-    // borrow ownership
-    double* ptr3;
-    ptr3 = new double[size];
-    cob = 2;
-    sexp c(size, ptr3, cob); 
-    //error calls resize
-    //c = vector(5, size + 1); 
-    c = vector(4, size);
-    print(c);
-    
-    print();
-    sexp d(size, ptr3, cob);
-    d = d + 10;
-    print(d);
-    print();
-    
-    delete[] ptr3;
-}
-</code></pre>
-<pre class="r"><code>trash &lt;- fct()</code></pre>
-<pre><code>## 3.14
-## 3.14
-## 3.14
-## 3.14
-## 3.14
-## 
-## 5
-## 5
-## 5
-## 
-## 4
-## 4
-## 4
-## 
-## 14
-## 14
-## 14</code></pre>
-<p>The pointer interface is particularly useful if the user function has
-to change the data of a vector or matrix of type <em>NumericVector</em>,
-<em>vec</em>, <em>NumericMatrix</em> or <em>mat</em>. Assuming that the
-user passes a function that accepts its arguments by reference it is
-easy to modify any variable which has a type that can return a pointer
-to its data. In the code below it is shown how <em>sexp</em> objects are
-constructed using the pointer interface. Thereby changing the content of
-variables which has an Rcpp type, a RcppArmadillo type, or is of type
-std::vector<double>.</p>
-<pre class="cpp"><code>// [[Rcpp::depends(ast2ast, RcppArmadillo)]]
-#include &lt;RcppArmadillo.h&gt;
-#include &lt;Rcpp.h&gt;
-// [[Rcpp::plugins(cpp17)]]
-using namespace Rcpp;
-using namespace arma;
-#include &lt;etr.hpp&gt;
-using namespace etr;
-
-typedef void (*fp)(sexp&amp; a);
-
-// [[Rcpp::export]]
-void call_package(Rcpp::XPtr&lt;fp&gt; inp) {
-  fp f = *inp;
-  
-  // NumericVector
-  NumericVector a_rcpp{1, 2, 3};
-  sexp a(a_rcpp.size(), a_rcpp.begin(), 2);
-  f(a);
-  Rcpp::Rcout &lt;&lt; a_rcpp &lt;&lt; std::endl;
-  
-  //arma::vec
-  vec a_arma(2, fill::value(30));
-  sexp b(2, a_arma.memptr(), 2);
-  f(b);
-  a_arma.print();
-  
-  // NumericMatrix
-  NumericMatrix c_rcpp(2, 2);
-  sexp c(2, 2, c_rcpp.begin(), 2);
-  f(c);
-  Rcpp::Rcout &lt;&lt; c_rcpp &lt;&lt; std::endl;
-  
-  //arma::mat
-  mat d_arma(3, 2, fill::value(30));
-  sexp d(3, 2, d_arma.memptr(), 2);
-  f(d);
-  d_arma.print();
-}
-</code></pre>
-<pre class="r"><code>f &lt;- function(a) {
-  a &lt;- a + 2
-}
-
-library(ast2ast)
-fa2a &lt;- translate(f, reference = TRUE, output = &quot;XPtr&quot;, types_of_args = &quot;sexp&quot;, return_type = &quot;void&quot;)
-trash &lt;- call_package(fa2a)</code></pre>
-<pre><code>## 3 4 5
-##    32.0000
-##    32.0000
-## 2.00000 2.00000
-## 2.00000 2.00000
-## 
-##    32.0000   32.0000
-##    32.0000   32.0000
-##    32.0000   32.0000</code></pre>
+</div>
 </div>
 
 

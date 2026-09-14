@@ -1,346 +1,182 @@
 ## ----setup, include=FALSE-----------------------------------------------------
 knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
 
-## ----modify objects, eval = TRUE----------------------------------------------
-f <- function(variable) {
-  variable <- 1
-}
-library(ast2ast)
-fetr <- translate(f)
-x <- 10
-return_value <- fetr(x)
-print(x)
-print(return_value)
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(a) {
+#   if (a > 0) x <- 1.0   # x is only assigned here...
+#   return(x)             # ...but read here regardless: returns 0.0 when a <= 0
+# }
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#    a <- 1
-#    a_db <- 3.14
-#    b = 2
-#    c <- c(1, 2, 3)
-#    d = vector(2)
-#    e <- vector(3.14, 4)
-#    f <- vector(c, 3)
-#    g <- matrix(2, 2)
-#    h <- matrix(6, 2, 2)
-#    i <- matrix(e, 2, 2)
-#  
-#    print("a")
-#    print(a)
-#    print(a_db)
-#    print()
-#    print("b")
-#    print(b)
-#    print()
-#    print("c")
-#    print(c)
-#    print()
-#    print("d")
-#    print(d)
-#    print()
-#    print("e")
-#    print(e)
-#    print()
-#    print("f")
-#    print(f)
-#    print()
-#    print("g")
-#    print(g)
-#    print()
-#    print("h")
-#    print(h)
-#    print()
-#    print("i")
-#    print(i)
-#    print()
-#  }
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(a, b, c) {
+#   argtypes(
+#     a |> type(vec(double)),
+#     b |> type(mat(double)),
+#     c |> type(double)
+#   )
+#   # ... body ...
+# }
+# f_cpp <- ast2ast::translate(f)
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#  
-#  a <- 2
-#  b <- 3
-#  print("scalar operations")
-#  print(a + b)
-#  print(a - b)
-#  print(a / b)
-#  print(a * b)
-#  
-#  print()
-#  
-#  print("vector & scalar operations")
-#  a <- c(1, 2, 3)
-#  b <- 4
-#  print(a + b)
-#  print(b - a)
-#  
-#  print()
-#  
-#  print("2 vectors (same length)")
-#  a <- 6:8
-#  b <- 1:3
-#  print(a / b)
-#  a <- 1:6
-#  b <- 1:3
-#  print(a / b)
-#  print("2 vectors (different length)")
-#  print("multiple of each other")
-#  a <- 1:6
-#  b <- 1:3
-#  print(a / b)
-#  print("not a multiple of each other")
-#  a <- 1:5
-#  b <- 1:3
-#  print(a / b) # different to R no warning
-#  
-#  print()
-#  
-#  print("matrix & scalar operations")
-#  a <- 3
-#  b <- matrix(3, 2, 2)
-#  print(a*b)
-#  print(b + 4)
-#  
-#  print()
-#  
-#  print("matrix & vector operations")
-#  a <- 5:6
-#  b <- matrix(3, 2, 2)
-#  print(b - a)
-#  print(a / b)
-#  
-#  print()
-#  
-#  print("matrix & matrix operations")
-#  a <- matrix(3, 2, 2)
-#  b <- matrix(4, 2, 1) # difference to R!
-#  print(a + b)
-#  
-#  print()
-#  
-#  print("mixed operations")
-#  a <- 1
-#  b <- 2:5
-#  c <- matrix(50, 2, 2)
-#  d <- a + b - c/2
-#  print(d)
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(a, b, c) {
+#   argtypes(
+#     a |> type(borrow_vec(double)) |> ref(),            # mutable, passed by reference
+#     b |> type(borrow_mat(double)) |> ref() |> const(), # read-only matrix reference
+#     c |> type(double) |> ref()                         # scalar reference (XPtr only)
+#   )
+#   # ... body ...
+# }
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#  
-#  print("pass nothing")
-#  a <- 1:8
-#  print(a)
-#  a[] <- 100
-#  print(a)
-#  print()
-#  
-#  print("pass logical")
-#  a <- 1:8
-#  print(a)
-#  a[TRUE] <- 100
-#  print(a)
-#  print()
-#  
-#  print("pass scalar")
-#  a <- 1:8
-#  print(a)
-#  a[1] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass vector")
-#  a <- 1:8
-#  b <- 2:5
-#  print(a)
-#  a[b] <- 100
-#  print(a)
-#  print()
-#  
-#  print("pass result of ==")
-#  a <- 1:8
-#  a[a < 5] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass result of !=")
-#  a <- 1:8
-#  b <- c(1, 2, 3, 0, 0, 0, 0, 8)
-#  a[a != b] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass result of <=")
-#  a <- 1:8
-#  b <- c(1, 2, 3, 0, 0, 0, 0, 8)
-#  a[a <= b] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass result of >=")
-#  a <- 1:8
-#  b <- c(1, 2, 3, 0, 0, 0, 0, 9)
-#  a[a >= b] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass result of >")
-#  a <- 1:8
-#  b <- c(0, 2, 3, 0, 0, 0, 0, 9)
-#  a[a > b] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass result of <")
-#  a <- 1:8
-#  b <- c(0, 2, 3, 0, 0, 0, 0, 9)
-#  a[a < b] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass scalar, scalar")
-#  a <- matrix(3, 4, 4)
-#  a[1, 1] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass vector, vector")
-#  a <- matrix(3, 4, 4)
-#  b <- c(1, 3)
-#  c <- c(2, 4)
-#  a[b, c] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("pass ==, >=")
-#  a <- matrix(1:16, 4, 4)
-#  b <- 1:4
-#  c <- c(1, 8, 3, 8)
-#  a[b == c, b >= c] <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("at")
-#  a <- 1:16
-#  at(a, 2) <- 100
-#  print(a)
-#  print()
-#  
-#  
-#  print("at")
-#  a <- matrix(1:16, 4, 4)
-#  at(a, 1, 4) <- 100
-#  print(a)
-#  print()
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# a <- 1L
+# a <- 2.5
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#    a <- 1:4
-#    print(a)
-#    a <- 1.1:5.2
-#    print(a)
-#  
-#    a <- 1:16
-#    print(length(a))
-#  
-#    b <- matrix(1:4, 2, 2)
-#    print(dim(b))
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function() {
+#   a <- 1L      # looks like an integer assignment...
+#   a <- 2.5     # ...but a is reassigned a double two lines later
+#   return(a)
+# }
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#    a <- 1:4
-#    b <- c(1, 2, 3, 5)
-#    c <- 9
-#    print(a == b)
-#    print(a <= b)
-#    print(a >= b)
-#    print(a != b)
-#    print(a < c)
-#    print(a > c)
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# fcpp <- ast2ast::translate(f, derivative = "forward")
+# fcpp <- ast2ast::translate(f, derivative = "reverse")
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#    a <- 1:4
-#    for(i in a) {
-#      print(i)
-#    }
-#  
-#    for(i in 1:length(a)) {
-#      a[i] <- i + i
-#    }
-#  
-#    for(i in 1:length(a)) {
-#      if(i < 4 && i > 1) {
-#        print(i)
-#      }
-#    }
-#  
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(y, x) {
+#   jac <- matrix(0.0, length(y), length(x))
+#   for (i in 1L:length(x)) {
+#     seed(x, i)
+# 
+#     y[[1L]] <- x[[1L]] * x[[2L]]
+#     y[[2L]] <- x[[1L]] + x[[2L]] * x[[2L]]
+# 
+#     d <- get_dot(y)
+#     jac[TRUE, i] <- d
+# 
+#     unseed(x, i)
+#   }
+#   return(jac)
+# }
+# 
+# fcpp_forward <- ast2ast::translate(f, derivative = "forward")
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#    a <- 1:4
-#    print(sin(a))
-#    print(cos(a))
-#    print(a^2)
-#    print(exp(a, 3))
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(y, x) {
+#   y[[1L]] <- x[[1L]] * x[[2L]]
+#   y[[2L]] <- x[[1L]] + x[[2L]] * x[[2L]]
+#   jac <- deriv(y, x)
+#   return(jac)
+# }
+# 
+# fcpp_reverse <- ast2ast::translate(f, derivative = "reverse")
 
-## -----------------------------------------------------------------------------
-#  f <- function() {
-#    dep <- c(0, 1, 0.5, 2.5, 3.5, 4.5, 4)
-#    indep <- 1:7
-#  
-#    evalpoints <- c(0.5, 1, 1.5, 2, 2.5,
-#                    3, 3.5, 4, 4.5, 5,
-#                    5.5, 6, 6.5)
-#    for(i in evalpoints) {
-#      print(cmr(i, indep, dep))
-#    }
-#  }
-#  
-#  library(ast2ast)
-#  fetr <- translate(f)
-#  fetr()
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(a) {
+#   argtypes(a |> type(int))
+#   factorial <- fn(
+#     argtypes(a |> type(int) |> const()),
+#     return(int),
+#     {
+#       if (a == 1L) return(a) else return(a * factorial(a - 1L))
+#     }
+#   )
+#   return(factorial(a))
+# }
+# fcpp <- ast2ast::translate(f)
+
+## ----eval = FALSE-------------------------------------------------------------
+# sq <- fn(
+#   argtypes(x |> type(double) |> const()),  # const -- accepts expressions
+#   return(double),
+#   return(x * x)
+# )
+# # sq(a + b) is fine; without const() on x, only sq(a) (a bare variable) would be.
+
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(interval) {
+#   argtypes(interval |> type(vec(double)))
+#   g <- fn(
+#     argtypes(x |> type(double)),
+#     return(double),
+#     {
+#       return(x^2 - 4)
+#     }
+#   )
+#   res <- uniroot(g, interval, 1e-10, 1000)
+#   return(res$root)
+# }
+# fcpp <- ast2ast::translate(f)
+
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function(x) {
+#   argtypes(
+#     x |> type(vec(double))
+#   )
+#   sq <- fn(
+#     argtypes(
+#       a |> type(double) |> const()
+#     ),
+#     return(double),
+#     return(a * a)
+#   )
+#   return(map(sq, x))
+# }
+# fcpp <- ast2ast::translate(f)
+# fcpp(1:5)
+
+## ----eval = FALSE-------------------------------------------------------------
+# rosen <- function(p) {
+#   argtypes(
+#     p |> type(vec(double))
+#   )
+#   loss <- fn(
+#     argtypes(
+#       x |> type(vec(double)) |> const()
+#     ),
+#     return(double),
+#     {
+#       a <- 1.0 - x[[1L]]
+#       b <- x[[2L]] - x[[1L]] * x[[1L]]
+#       return(a * a + 100.0 * b * b)
+#     }
+#   )
+#   lo <- c(-5.0, -5.0)
+#   up <- c(5.0, 5.0)
+#   res <- lbfgsb(loss, p, lo, up, 100L, 1e7, 1e-8, 5L)
+#   return(res$par)
+# }
+# fcpp <- ast2ast::translate(rosen, derivative = "reverse")
+# fcpp(c(-1.2, 1.0))
+
+## ----eval = FALSE-------------------------------------------------------------
+# types_f <- function() {
+#   new_type(Point, slots(x |> type(double), y |> type(double)))
+# }
+# 
+# f <- function(p) {
+#   argtypes(p |> type(Point))
+#   p$x <- p$x + 1
+#   return(p)
+# }
+# 
+# fcpp <- ast2ast::translate(f, types_f = types_f)
+# 
+# p <- structure(list(x = 1, y = 2), class = "Point")
+# fcpp(p)
+
+## ----eval = FALSE-------------------------------------------------------------
+# f <- function() {
+#   dep <- c(0, 1, 0.5, 2.5, 3.5, 4.5, 4)
+#   indep <- 1:7
+#   evalpoints <- c(
+#     0.5, 1, 1.5, 2, 2.5,
+#     3, 3.5, 4, 4.5, 5,
+#     5.5, 6, 6.5
+#   )
+#   for (i in evalpoints) {
+#     print(cmr(i, indep, dep))
+#   }
+# }
 

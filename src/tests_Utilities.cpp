@@ -1,0 +1,515 @@
+#include <Rcpp.h>
+#include "../inst/include/etr.hpp"
+using namespace etr;
+#include <cstring>
+
+// [[Rcpp::export]]
+void test_utilities() {
+  // is.na
+  {
+    Array<ReverseDouble, Buffer<ReverseDouble>> a;
+    a = c(Double::NA(), Double::NaN(), Double::Inf(), Double(3.14),
+          Integer::NA(), Integer(19),
+          Logical::NA(), Logical(true),
+          Dual::NA(), Dual::NaN(), Dual::Inf(), Dual(3.14, 0.0),
+          ReverseDouble(Double::NA()), ReverseDouble(Double(3.14))
+          );
+    auto res = isNA(a);
+    std::vector<bool> expected_is_na{
+      true, false, false, false,
+      true, false,
+      true, false,
+      true, false, false, false,
+      true, false
+    };
+    for (std::size_t i = 0; i < expected_is_na.size(); i++) {
+      ass<"is na on array">( get_val(res.get(i)) == expected_is_na[i] );
+    }
+  }
+  // is.nan
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double::NA(), Double::NaN(), Double::Inf(), Double(3.14),
+          Integer::NA(), Integer(19),
+          Logical::NA(), Logical(true),
+          Dual::NA(), Dual::NaN(), Dual::Inf(), Dual(3.14, 0.0),
+          ReverseDouble(Double::NaN()), ReverseDouble(Double(3.14))
+          );
+    auto res = isNaN(a);
+    std::vector<bool> expected_is_na{
+      false, true, false, false,
+      false, false,
+      false, false,
+      false, true, false, false,
+      true, false
+    };
+    for (std::size_t i = 0; i < expected_is_na.size(); i++) {
+      ass<"is nan on array">( get_val(res.get(i)) == expected_is_na[i] );
+    }
+  }
+  // is.infinite
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double::NA(), Double::NaN(), Double::Inf(), Double(3.14),
+          Integer::NA(), Integer(19),
+          Logical::NA(), Logical(true),
+          Dual::NA(), Dual::NaN(), Dual::Inf(), Dual(3.14, 0.0),
+          ReverseDouble(Double::Inf()), ReverseDouble(Double(3.14))
+          );
+    auto res = isInfinite(a);
+    std::vector<bool> expected_is_na{
+      false, false, true, false,
+      false, false,
+      false, false,
+      false, false, true, false,
+      true, false
+    };
+    for (std::size_t i = 0; i < expected_is_na.size(); i++) {
+      ass<"is inf on array">( get_val(res.get(i)) == expected_is_na[i] );
+    }
+  }
+  // is.finite
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double::NA(), Double::NaN(), Double::Inf(), Double(3.14),
+          Integer::NA(), Integer(19),
+          Logical::NA(), Logical(true),
+          Dual::NA(), Dual::NaN(), Dual::Inf(), Dual(3.14, 0.0),
+          ReverseDouble(Double::Inf()), ReverseDouble(Double(3.14))
+          );
+    auto res = isFinite(a);
+    std::vector<bool> expected_is_na{
+      false, false, false, true,
+      false, true,
+      false, true,
+      false, false, false, true,
+      false, true
+    };
+    for (std::size_t i = 0; i < expected_is_na.size(); i++) {
+      ass<"is finite on array">( get_val(res.get(i)) == expected_is_na[i] );
+    }
+  }
+  // length
+  {
+    Array<Double, Buffer<Double>> a;
+    ass<"length of empty array">(length(a) == Integer(0));
+    a = numeric(Integer(10));
+    ass<"length of allocated array">(length(a) == Integer(10));
+    ass<"length of scalar is 1">(length(Double(1)) == Integer(1));
+  }
+  // dim
+  {
+    Array<Double, Buffer<Double>> a;
+    a = numeric(Integer(10));
+    ass<"dim of vec">(dim(a).get(0) == Integer(10));
+    ass<"dim of vec size == 1">(dim(a).size() == 1);
+    a = matrix(Double(1.1), Integer(10), Integer(5));
+    ass<"dim[1] of mat">(dim(a).get(0) == Integer(10));
+    ass<"dim[2] of mat">(dim(a).get(1) == Integer(5));
+    ass<"dim of mat size == 2">(dim(a).size() == 2);
+    a = array(Double(1.1), c(Integer(1), Integer(2), Integer(3)));
+    ass<"dim[1] of array">(dim(a).get(0) == Integer(1));
+    ass<"dim[2] of array">(dim(a).get(1) == Integer(2));
+    ass<"dim[3] of array">(dim(a).get(2) == Integer(3));
+    ass<"dim of array size == 3">(dim(a).size() == 3);
+  }
+  // max & min
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(3.0), Double(1.0), Double(5.0), Double(2.0));
+    ass<"max of vec">(get_val(max(a)) == 5.0);
+    ass<"min of vec">(get_val(min(a)) == 1.0);
+    ass<"max of scalar">(get_val(max(Double(7.0))) == 7.0);
+    ass<"min of scalar">(get_val(min(Double(7.0))) == 7.0);
+    Array<Double, Buffer<Double>> b;
+    b = c(Double(3.0), Double::NA(), Double(5.0));
+    ass<"max with NA -> NA">(max(b).isNA());
+    ass<"min with NA -> NA">(min(b).isNA());
+    Array<Integer, Buffer<Integer>> i;
+    i = c(Integer(3), Integer(9), Integer(1));
+    ass<"max keeps integer">(get_val(max(i)) == 9);
+    ass<"min keeps integer">(get_val(min(i)) == 1);
+  }
+  // which.max & which.min
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(3.0), Double(1.0), Double(5.0), Double(5.0), Double(2.0));
+    ass<"which.max first extreme">(get_val(which_max(a)) == 3);
+    ass<"which.min">(get_val(which_min(a)) == 2);
+    Array<Double, Buffer<Double>> b;
+    b = c(Double::NA(), Double(4.0), Double(1.0));
+    ass<"which.max skips NA">(get_val(which_max(b)) == 2);
+    ass<"which.min skips NA">(get_val(which_min(b)) == 3);
+  }
+  // all & any
+  {
+    Array<Logical, Buffer<Logical>> t;
+    t = c(Logical(true), Logical(true), Logical(true));
+    ass<"all true">(get_val(all(t)) == true);
+    ass<"any true">(get_val(any(t)) == true);
+    Array<Logical, Buffer<Logical>> f;
+    f = c(Logical(true), Logical(false), Logical(true));
+    ass<"all with one false">(get_val(all(f)) == false);
+    ass<"any with one true">(get_val(any(f)) == true);
+    Array<Logical, Buffer<Logical>> ff;
+    ff = c(Logical(false), Logical(false));
+    ass<"any all false">(get_val(any(ff)) == false);
+    Array<Logical, Buffer<Logical>> na1;
+    na1 = c(Logical(true), Logical::NA());
+    ass<"all true+NA -> NA">(all(na1).isNA());
+    Array<Logical, Buffer<Logical>> na2;
+    na2 = c(Logical(false), Logical::NA());
+    ass<"all false+NA -> false">(get_val(all(na2)) == false);
+    Array<Logical, Buffer<Logical>> na3;
+    na3 = c(Logical(true), Logical::NA());
+    ass<"any true+NA -> true">(get_val(any(na3)) == true);
+    Array<Logical, Buffer<Logical>> na4;
+    na4 = c(Logical(false), Logical::NA());
+    ass<"any false+NA -> NA">(any(na4).isNA());
+  }
+  // stop
+  {
+    bool threw = false;
+    try {
+      stop("boom");
+    } catch (...) {
+      threw = true;
+    }
+    ass<"stop throws">(threw);
+  }
+  // modulo (%%): x - floor(x/y)*y, result sign follows the divisor
+  {
+    ass<"5 %% 3">(get_val(Double(5.0) % Double(3.0)) == 2.0);
+    ass<"-5 %% 3 -> 1">(get_val(Double(-5.0) % Double(3.0)) == 1.0);
+    ass<"5 %% -3 -> -1">(get_val(Double(5.0) % Double(-3.0)) == -1.0);
+    ass<"5L %% 2L -> 1">(get_val(Integer(5) % Integer(2)) == 1);
+    ass<"int mod by zero -> NA">((Integer(5) % Integer(0)).isNA());
+    ass<"NA %% 2 -> NA">((Double::NA() % Double(2.0)).isNA());
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(5.0), Double(6.0), Double(7.0));
+    auto r = a % Double(3.0);
+    ass<"vec %% scalar [0]">(get_val(r.get(0)) == 2.0);
+    ass<"vec %% scalar [1]">(get_val(r.get(1)) == 0.0);
+    ass<"vec %% scalar [2]">(get_val(r.get(2)) == 1.0);
+  }
+  // modulo derivatives: d/dx = 1, d/dy = -floor(x/y)
+  {
+    Dual rx = Dual(5.0, 2.0) % Dual(3.0, 0.0);
+    ass<"dual mod value">(rx.val == 2.0);
+    ass<"dual mod d/dx = 1 * seed">(rx.dot == 2.0);
+    Dual ry = Dual(5.0, 0.0) % Dual(3.0, 2.0);
+    ass<"dual mod d/dy = -floor(x/y) * seed">(ry.dot == -2.0);
+    // reverse mode: same gradients via Sub/Mul composition (no ROp::Mod)
+    TAPE_INTERN.clear();
+    ReverseDouble x = ReverseDouble::Var(5.0);
+    ReverseDouble y = ReverseDouble::Var(3.0);
+    ReverseDouble f = x % y;
+    ass<"rd mod value">(get_val(f) == 2.0);
+    auto df_dx = deriv(f, x);
+    auto df_dy = deriv(f, y);
+    ass<"rd mod df/dx = 1">(get_val(df_dx.get(0)) == 1.0);
+    ass<"rd mod df/dy = -floor(x/y)">(get_val(df_dy.get(0)) == -1.0);
+  }
+  // integer division (%/%): floor(x/y); derivative 0 a.e.
+  {
+    ass<"7 %/% 2 -> 3">(get_val(idiv(Double(7.0), Double(2.0))) == 3.0);
+    ass<"-7 %/% 2 -> -4 floored">(get_val(idiv(Double(-7.0), Double(2.0))) == -4.0);
+    ass<"7 %/% -2 -> -4 floored">(get_val(idiv(Double(7.0), Double(-2.0))) == -4.0);
+    ass<"7L %/% 2L -> 3">(get_val(idiv(Integer(7), Integer(2))) == 3);
+    ass<"int idiv by zero -> NA">(idiv(Integer(5), Integer(0)).isNA());
+    ass<"NA %/% 2 -> NA">(idiv(Double::NA(), Double(2.0)).isNA());
+    // identity: (x %% y) + y * (x %/% y) == x
+    Double xx(7.0), yy(2.0);
+    ass<"x == (x%%y) + y*(x%/%y)">(get_val((xx % yy) + yy * idiv(xx, yy)) == 7.0);
+    // vector %/% scalar (lazy view)
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(7.0), Double(8.0), Double(9.0));
+    auto r = idiv(a, Double(2.0));
+    ass<"vec %/% scalar [0]">(get_val(r.get(0)) == 3.0);
+    ass<"vec %/% scalar [1]">(get_val(r.get(1)) == 4.0);
+    ass<"vec %/% scalar [2]">(get_val(r.get(2)) == 4.0);
+    // forward AD: pure floor, derivative 0
+    Dual d = idiv(Dual(7.0, 2.0), Dual(2.0, 3.0));
+    ass<"idiv dual value">(d.val == 3.0);
+    ass<"idiv dual derivative 0 despite non-unit seeds">(d.dot == 0.0);
+    // reverse AD: both gradients 0 (value is a tape constant)
+    TAPE_INTERN.clear();
+    ReverseDouble rx = ReverseDouble::Var(7.0);
+    ReverseDouble ry = ReverseDouble::Var(2.0);
+    ReverseDouble fi = idiv(rx, ry);
+    ass<"idiv rd value">(get_val(fi) == 3.0);
+    auto gx = deriv(fi, rx);
+    auto gy = deriv(fi, ry);
+    ass<"idiv rd d/dx = 0">(get_val(gx.get(0)) == 0.0);
+    ass<"idiv rd d/dy = 0">(get_val(gy.get(0)) == 0.0);
+  }
+  // rev: reverse a vector (scalar unchanged, matrix flattens to a vector)
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(1.0), Double(2.0), Double(3.0), Double(4.0));
+    auto r = rev(a);
+    ass<"rev size">(r.size() == 4);
+    ass<"rev is 1-D">(r.dim.size() == 1);
+    ass<"rev [0]">(get_val(r.get(0)) == 4.0);
+    ass<"rev [1]">(get_val(r.get(1)) == 3.0);
+    ass<"rev [2]">(get_val(r.get(2)) == 2.0);
+    ass<"rev [3]">(get_val(r.get(3)) == 1.0);
+    ass<"rev of scalar is unchanged">(get_val(rev(Double(7.0))) == 7.0);
+    Array<Double, Buffer<Double>> m;
+    m = matrix(Double(1.1), Integer(2), Integer(3));
+    ass<"matrix is 2-D before rev">(m.get_dim().size() == 2);
+    auto rm = rev(m);
+    ass<"rev flattens matrix to 1-D">(rm.dim.size() == 1);
+    ass<"rev preserves size">(rm.size() == 6);
+  }
+  // as.numeric / as.integer / as.logical
+  {
+    // scalar casts
+    ass<"as.numeric(5L) -> 5.0">(get_val(as_numeric<Double>(Integer(5))) == 5.0);
+    ass<"as.integer(3.7) truncates -> 3">(get_val(as_integer(Double(3.7))) == 3);
+    ass<"as.integer(-3.7) truncates -> -3">(get_val(as_integer(Double(-3.7))) == -3);
+    ass<"as.logical(0) -> false">(get_val(as_logical(Double(0.0))) == false);
+    ass<"as.logical(2.5) -> true">(get_val(as_logical(Double(2.5))) == true);
+    ass<"as.numeric of same type unchanged">(get_val(as_numeric<Double>(Double(1.5))) == 1.5);
+    // vector cast preserves order and length (int vec -> double vec)
+    Array<Integer, Buffer<Integer>> a;
+    a = c(Integer(1), Integer(2), Integer(3));
+    auto d = as_numeric<Double>(a);
+    ass<"as.numeric vec size">(d.size() == 3);
+    ass<"as.numeric vec [0]">(get_val(d.get(0)) == 1.0);
+    ass<"as.numeric vec [1]">(get_val(d.get(1)) == 2.0);
+    ass<"as.numeric vec [2]">(get_val(d.get(2)) == 3.0);
+    // double vec -> integer vec (truncates, order preserved)
+    Array<Double, Buffer<Double>> b;
+    b = c(Double(1.9), Double(2.2), Double(3.8));
+    auto iv = as_integer(b);
+    ass<"as.integer vec [0]">(get_val(iv.get(0)) == 1);
+    ass<"as.integer vec [1]">(get_val(iv.get(1)) == 2);
+    ass<"as.integer vec [2]">(get_val(iv.get(2)) == 3);
+  }
+  // rbind & cbind (column-major: [row, col] at col*nrow + row)
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(1.0), Double(2.0), Double(3.0));
+    Array<Double, Buffer<Double>> b;
+    b = c(Double(4.0), Double(5.0), Double(6.0));
+    // rbind: 2 rows x 3 cols; each arg is a row
+    auto r = rbind(a, b);
+    ass<"rbind nrow">(nrow(r) == Integer(2));
+    ass<"rbind ncol">(ncol(r) == Integer(3));
+    ass<"rbind [0,0]=1">(get_val(r.get(0 * 2 + 0)) == 1.0);
+    ass<"rbind [1,0]=4">(get_val(r.get(0 * 2 + 1)) == 4.0);
+    ass<"rbind [0,1]=2">(get_val(r.get(1 * 2 + 0)) == 2.0);
+    ass<"rbind [0,2]=3">(get_val(r.get(2 * 2 + 0)) == 3.0);
+    ass<"rbind [1,2]=6">(get_val(r.get(2 * 2 + 1)) == 6.0);
+    // cbind: 3 rows x 2 cols; each arg is a column
+    auto cc = cbind(a, b);
+    ass<"cbind nrow">(nrow(cc) == Integer(3));
+    ass<"cbind ncol">(ncol(cc) == Integer(2));
+    ass<"cbind [0,0]=1">(get_val(cc.get(0 * 3 + 0)) == 1.0);
+    ass<"cbind [2,0]=3">(get_val(cc.get(0 * 3 + 2)) == 3.0);
+    ass<"cbind [0,1]=4">(get_val(cc.get(1 * 3 + 0)) == 4.0);
+    ass<"cbind [2,1]=6">(get_val(cc.get(1 * 3 + 2)) == 6.0);
+    // recycling: a scalar fills its whole row
+    auto r2 = rbind(a, Double(9.0));
+    ass<"rbind recycle scalar [1,0]">(get_val(r2.get(0 * 2 + 1)) == 9.0);
+    ass<"rbind recycle scalar [1,2]">(get_val(r2.get(2 * 2 + 1)) == 9.0);
+    // mixed type promotes to double
+    Array<Integer, Buffer<Integer>> ai;
+    ai = c(Integer(7), Integer(8), Integer(9));
+    auto rm = rbind(a, ai);
+    ass<"rbind mixed [1,0]=7.0">(get_val(rm.get(0 * 2 + 1)) == 7.0);
+  }
+  // vector recycling: the shorter argument repeats via safe_modulo
+  {
+    Array<Double, Buffer<Double>> three;
+    three = c(Double(1.0), Double(2.0), Double(3.0));
+    Array<Double, Buffer<Double>> two;
+    two = c(Double(10.0), Double(20.0));
+    // rbind: ncols = max(3, 2) = 3; `two` as a row recycles to (10, 20, 10)
+    auto r = rbind(three, two);
+    ass<"rbind recycle ncol">(ncol(r) == Integer(3));
+    ass<"rbind recycle [1,0]=10">(get_val(r.get(0 * 2 + 1)) == 10.0);
+    ass<"rbind recycle [1,1]=20">(get_val(r.get(1 * 2 + 1)) == 20.0);
+    ass<"rbind recycle [1,2]=10 wraps">(get_val(r.get(2 * 2 + 1)) == 10.0);
+    // cbind: nrows = max(3, 2) = 3; `two` as a column recycles to (10, 20, 10)
+    auto cc = cbind(three, two);
+    ass<"cbind recycle nrow">(nrow(cc) == Integer(3));
+    ass<"cbind recycle [0,1]=10">(get_val(cc.get(1 * 3 + 0)) == 10.0);
+    ass<"cbind recycle [1,1]=20">(get_val(cc.get(1 * 3 + 1)) == 20.0);
+    ass<"cbind recycle [2,1]=10 wraps">(get_val(cc.get(1 * 3 + 2)) == 10.0);
+    // the shorter argument recycles even when it comes first
+    auto r2 = rbind(two, three);
+    ass<"rbind short-first ncol">(ncol(r2) == Integer(3));
+    ass<"rbind short-first [0,2]=10 wraps">(get_val(r2.get(2 * 2 + 0)) == 10.0);
+    ass<"rbind short-first [1,2]=3">(get_val(r2.get(2 * 2 + 1)) == 3.0);
+  }
+  // floor / ceiling / trunc (always double; derivative 0 a.e.)
+  {
+    ass<"floor(2.7)">(get_val(floor(Double(2.7))) == 2.0);
+    ass<"floor(-2.3)">(get_val(floor(Double(-2.3))) == -3.0);
+    ass<"ceiling(2.1)">(get_val(ceiling(Double(2.1))) == 3.0);
+    ass<"ceiling(-2.7)">(get_val(ceiling(Double(-2.7))) == -2.0);
+    ass<"trunc(2.7)">(get_val(trunc(Double(2.7))) == 2.0);
+    ass<"trunc(-2.7)">(get_val(trunc(Double(-2.7))) == -2.0);
+    ass<"floor(5L) -> 5.0">(get_val(floor(Integer(5))) == 5.0);
+    ass<"floor(NA) -> NA">(floor(Double::NA()).isNA());
+    // vector: order preserved, shape kept
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(1.2), Double(2.8), Double(3.5));
+    auto r = floor(a);
+    ass<"floor vec size">(r.size() == 3);
+    ass<"floor vec [0]">(get_val(r.get(0)) == 1.0);
+    ass<"floor vec [1]">(get_val(r.get(1)) == 2.0);
+    ass<"floor vec [2]">(get_val(r.get(2)) == 3.0);
+    Array<Double, Buffer<Double>> m;
+    m = matrix(Double(1.7), Integer(2), Integer(3));
+    auto rm = floor(m);
+    ass<"floor keeps matrix dim">(rm.dim.size() == 2);
+    ass<"floor matrix nrow">(nrow(rm) == Integer(2));
+    ass<"floor matrix ncol">(ncol(rm) == Integer(3));
+    // forward AD: value floored, derivative 0
+    Dual fd = floor(Dual(2.7, 3.0));
+    ass<"floor dual value">(fd.val == 2.0);
+    ass<"floor dual derivative 0 despite non-unit seed">(fd.dot == 0.0);
+    // reverse AD: gradient is 0
+    TAPE_INTERN.clear();
+    ReverseDouble x = ReverseDouble::Var(2.7);
+    ReverseDouble fx = floor(x);
+    ass<"floor rd value">(get_val(fx) == 2.0);
+    auto g = deriv(fx, x);
+    ass<"floor rd gradient 0">(get_val(g.get(0)) == 0.0);
+  }
+  // sum & prod
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(1.0), Double(2.0), Double(3.0), Double(4.0));
+    ass<"sum vec">(get_val(sum(a)) == 10.0);
+    ass<"prod vec">(get_val(prod(a)) == 24.0);
+    ass<"sum scalar">(get_val(sum(Double(5.0))) == 5.0);
+    ass<"prod scalar">(get_val(prod(Double(5.0))) == 5.0);
+    // sum keeps integer, prod -> double
+    Array<Integer, Buffer<Integer>> ai;
+    ai = c(Integer(1), Integer(2), Integer(3));
+    ass<"sum integer stays integer">(get_val(sum(ai)) == 6);
+    ass<"prod integer -> double">(get_val(prod(ai)) == 6.0);
+    // NA propagates
+    Array<Double, Buffer<Double>> na;
+    na = c(Double(1.0), Double::NA(), Double(3.0));
+    ass<"sum with NA -> NA">(sum(na).isNA());
+    ass<"prod with NA -> NA">(prod(na).isNA());
+    // prod with a zero (chain rule, no division)
+    Array<Double, Buffer<Double>> z;
+    z = c(Double(2.0), Double(0.0), Double(5.0));
+    ass<"prod with zero -> 0">(get_val(prod(z)) == 0.0);
+    // forward AD: d(sum)/dx0 = 1, d(prod)/dx0 = product of the others
+    // seeds s0 = 2, s1 = 5: d(sum) = s0 + s1; d(prod) = x1*s0 + x0*s1
+    Dual sd = sum(c(Dual(2.0, 2.0), Dual(3.0, 5.0)));
+    ass<"sum dual value">(sd.val == 5.0);
+    ass<"sum dual dot = s0 + s1">(sd.dot == 7.0);
+    Dual pd = prod(c(Dual(2.0, 2.0), Dual(3.0, 5.0)));
+    ass<"prod dual value">(pd.val == 6.0);
+    ass<"prod dual dot = x1*s0 + x0*s1">(pd.dot == 16.0);
+    // reverse AD: sum gradient is 1 everywhere; prod gradient is product of others
+    TAPE_INTERN.clear();
+    Array<ReverseDouble, Buffer<ReverseDouble>> r;
+    r = c(ReverseDouble::Var(2.0), ReverseDouble::Var(3.0), ReverseDouble::Var(4.0));
+    ReverseDouble s = sum(r);
+    ass<"sum rd value">(get_val(s) == 9.0);
+    auto gs = deriv(s, r);
+    ass<"sum rd grad[0]=1">(get_val(gs.get(0)) == 1.0);
+    ass<"sum rd grad[2]=1">(get_val(gs.get(2)) == 1.0);
+    TAPE_INTERN.clear();
+    Array<ReverseDouble, Buffer<ReverseDouble>> rp;
+    rp = c(ReverseDouble::Var(2.0), ReverseDouble::Var(3.0), ReverseDouble::Var(4.0));
+    ReverseDouble p = prod(rp);
+    ass<"prod rd value">(get_val(p) == 24.0);
+    auto gp = deriv(p, rp);
+    ass<"prod rd grad[0]=x1*x2=12">(get_val(gp.get(0)) == 12.0);
+    ass<"prod rd grad[1]=x0*x2=8">(get_val(gp.get(1)) == 8.0);
+    ass<"prod rd grad[2]=x0*x1=6">(get_val(gp.get(2)) == 6.0);
+  }
+  // chol: A = [[4,2],[2,3]] -> upper R = [[2,1],[0,sqrt(2)]], A = t(R) %*% R
+  {
+    Array<Double, Buffer<Double>> a;
+    a = c(Double(4.0), Double(2.0), Double(2.0), Double(3.0));
+    a.dim = std::vector<std::size_t>{2, 2};
+    auto r = chol(a);
+    ass<"chol nrow">(nrow(r) == Integer(2));
+    ass<"chol ncol">(ncol(r) == Integer(2));
+    ass<"chol R[0,0]=2">(get_val(r.get(0)) == 2.0);
+    ass<"chol R[1,0]=0 (lower zeroed)">(get_val(r.get(1)) == 0.0);
+    ass<"chol R[0,1]=1">(get_val(r.get(2)) == 1.0);
+    ass<"chol R[1,1]=sqrt(2)">(std::abs(get_val(r.get(3)) - std::sqrt(2.0)) < 1e-9);
+    // non-positive-definite input errors
+    Array<Double, Buffer<Double>> b;
+    b = c(Double(1.0), Double(2.0), Double(2.0), Double(1.0));
+    b.dim = std::vector<std::size_t>{2, 2};
+    bool threw = false;
+    try { auto bad = chol(b); } catch (...) { threw = true; }
+    ass<"chol non-PD throws">(threw);
+    // integer matrix is cast to double; same factorization
+    Array<Integer, Buffer<Integer>> ai;
+    ai = c(Integer(4), Integer(2), Integer(2), Integer(3));
+    ai.dim = std::vector<std::size_t>{2, 2};
+    auto ri = chol(ai);
+    ass<"chol(int) R[0,0]=2">(get_val(ri.get(0)) == 2.0);
+    ass<"chol(int) R[0,1]=1">(get_val(ri.get(2)) == 1.0);
+    ass<"chol(int) R[1,1]=sqrt(2)">(std::abs(get_val(ri.get(3)) - std::sqrt(2.0)) < 1e-9);
+  }
+  // forward-mode chol (Dual): Rdot must match a central finite difference
+  {
+    const double Av[4] = {4.0, 2.0, 2.0, 3.0}; // [[4,2],[2,3]] column-major
+    const double Ad[4] = {1.0, 0.5, 0.5, 1.0}; // symmetric perturbation
+    Array<Dual, Buffer<Dual>> adual;
+    adual = c(Dual(Av[0], Ad[0]), Dual(Av[1], Ad[1]),
+              Dual(Av[2], Ad[2]), Dual(Av[3], Ad[3]));
+    adual.dim = std::vector<std::size_t>{2, 2};
+    auto rd = chol(adual);
+    ass<"chol dual value R[0,0]=2">(rd.get(0).val == 2.0);
+
+    auto chol_d = [](const double m[4]) {
+      Array<Double, Buffer<Double>> A;
+      A = c(Double(m[0]), Double(m[1]), Double(m[2]), Double(m[3]));
+      A.dim = std::vector<std::size_t>{2, 2};
+      return chol(A);
+    };
+    const double h = 1e-6;
+    double ap[4], am[4];
+    for (int k = 0; k < 4; ++k) { ap[k] = Av[k] + h * Ad[k]; am[k] = Av[k] - h * Ad[k]; }
+    auto rp = chol_d(ap);
+    auto rm = chol_d(am);
+    for (std::size_t k = 0; k < 4; ++k) {
+      const double fd = (get_val(rp.get(k)) - get_val(rm.get(k))) / (2.0 * h);
+      ass<"chol dual dot vs finite diff">(std::abs(rd.get(k).dot - fd) < 1e-5);
+    }
+  }
+  // reverse-mode chol (ReverseDouble): grad of sum(chol(A)) vs finite difference
+  {
+    const double Av[4] = {4.0, 2.0, 2.0, 3.0};
+    TAPE_INTERN.clear();
+    Array<ReverseDouble, Buffer<ReverseDouble>> A;
+    A = c(ReverseDouble::Var(Av[0]), ReverseDouble::Var(Av[1]),
+          ReverseDouble::Var(Av[2]), ReverseDouble::Var(Av[3]));
+    A.dim = std::vector<std::size_t>{2, 2};
+    auto R = chol(A);
+    ReverseDouble loss = R.get(0) + R.get(1) + R.get(2) + R.get(3);
+    auto g = deriv(loss, A);
+
+    auto loss_d = [](const double m[4]) {
+      Array<Double, Buffer<Double>> M;
+      M = c(Double(m[0]), Double(m[1]), Double(m[2]), Double(m[3]));
+      M.dim = std::vector<std::size_t>{2, 2};
+      auto rr = chol(M);
+      return get_val(rr.get(0)) + get_val(rr.get(1)) + get_val(rr.get(2)) + get_val(rr.get(3));
+    };
+    const double h = 1e-6;
+    for (std::size_t k = 0; k < 4; ++k) {
+      double mp[4], mm[4];
+      for (std::size_t j = 0; j < 4; ++j) { mp[j] = Av[j]; mm[j] = Av[j]; }
+      mp[k] += h; mm[k] -= h;
+      const double fd = (loss_d(mp) - loss_d(mm)) / (2.0 * h);
+      ass<"chol reverse grad vs finite diff">(std::abs(get_val(g.get(k)) - fd) < 1e-5);
+    }
+  }
+}

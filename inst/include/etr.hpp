@@ -19,37 +19,24 @@ You should have received a copy of the GNU General Public License along with etr
 If not see: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html#SEC4
 */
 
-#ifndef A2A_H
-#define A2A_H
+#ifndef ETR_HPP
+#define ETR_HPP
 
-
-#include "etr_bits/header.hpp"
-#include "etr_bits/util.hpp"
-#include "etr_bits/pointer_storage.hpp"
-#include "etr_bits/vec.hpp"
-#include "etr_bits/add.hpp"
-#include "etr_bits/subtract.hpp"
-#include "etr_bits/mul.hpp"
-#include "etr_bits/divide.hpp"
-#include "etr_bits/print.hpp"
-#include "etr_bits/subset.hpp"
-#include "etr_bits/subsetassign.hpp"
-#include "etr_bits/concatenate.hpp"
-#include "etr_bits/colon.hpp"
-#include "etr_bits/allocation.hpp"
-#include "etr_bits/exponent.hpp"
-#include "etr_bits/trigo.hpp"
-#include "etr_bits/interpolation.hpp"
-#include "etr_bits/comparison.hpp"
-#include "etr_bits/checks_na_inf.hpp"
-#include "etr_bits/distri.hpp"
-#include "etr_bits/conversion.hpp"
-
-//#define vec VEC<double>
-//#define mat VEC<double>
-
-#define sexp etr::VEC<double>
-
-//using namespace etr;
+#include "etr_bits/Core.hpp"
+#include "etr_bits/Collection.hpp"
+#include "etr_bits/Allocation.hpp"
+#include "etr_bits/Calculations.hpp"
+#include "etr_bits/Interpolation.hpp"
+#include "etr_bits/Subsetting.hpp"
+#include "etr_bits/Utilities.hpp"
+// Uniroot.hpp's uniroot_result struct needs Cast/SEXP2Scalar/checked_elt
+// from Utilities/SEXPConversions.hpp, so it has to come after Utilities.hpp
+// -- can't live in Core.hpp like the other Core/*.hpp headers.
+// -- same is true for Functionals
+#include "etr_bits/Core/Uniroot.hpp"
+#include "etr_bits/Functionals.hpp"
+#include "etr_bits/Derivatives.hpp"
+// after Derivatives.hpp: lbfgsb's gradient goes through etr::jacobian
+#include "etr_bits/Optimization.hpp"
 
 #endif

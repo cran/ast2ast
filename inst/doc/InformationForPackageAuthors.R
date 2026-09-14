@@ -1,39 +1,32 @@
 ## ----setup, include=FALSE-----------------------------------------------------
-knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE, cache = FALSE)
 
-## ---- eval = FALSE, echo = TRUE-----------------------------------------------
-#  f <- function(a) {
-#    d_db = 1
-#    ret <- a + 2 + d_db
-#    return(ret)
-#  }
+## ----eval = FALSE, echo = TRUE, attr.source='.numberLines'--------------------
+# bubbleSort <- function(a) {
+#   size <- length(a)
+#   for (i in 1:size) {
+#     for (j in 1:(size - 1)) {
+#       if (a[j] > a[j + 1]) {
+#         temp <- a[j]
+#         a[j] <- a[j + 1]
+#         a[j + 1] <- temp
+#       }
+#     }
+#   }
+#   return(a)
+# }
 
-## ---- eval = TRUE-------------------------------------------------------------
-f <- function(a) {
-  b <- a + 2
-  return(b)
-}  
-library(ast2ast)
-f_cpp <- translate(f, output = "XPtr", types_of_args = "sexp", return_type = "sexp")
-
-## ---- eval = TRUE-------------------------------------------------------------
-call_package(f_cpp)
-
-## ---- eval = TRUE-------------------------------------------------------------
-trash <- fct()
-
-## ---- eval = TRUE-------------------------------------------------------------
-trash <- fct()
-
-## ---- eval = TRUE-------------------------------------------------------------
-trash <- fct()
-
-## ---- eval = TRUE-------------------------------------------------------------
-f <- function(a) {
-  a <- a + 2
+## ----eval = TRUE, echo = TRUE-------------------------------------------------
+f <- function(a, b) {
+  argtypes(
+    a |> type(vec(double)) |> ref(),
+    b |> type(vec(double)) |> ref()
+  )
+  c <- a + b
+  return(c)
 }
+fcpp <- ast2ast::translate(f, output = "XPtr")
 
-library(ast2ast)
-fa2a <- translate(f, reference = TRUE, output = "XPtr", types_of_args = "sexp", return_type = "void")
-trash <- call_package(fa2a)
+## ----eval = TRUE, echo = TRUE-------------------------------------------------
+call_xptr(fcpp)
 
