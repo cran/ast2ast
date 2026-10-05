@@ -1,4 +1,4 @@
-2e5afcdb65a49baecd6f09fff409ca88 *DESCRIPTION
+41b451dfffdec2e6f9d3bb009c300392 *DESCRIPTION
 15e4ae5ea5457c885b89b4e059ff4b14 *NAMESPACE
 83baeb952d1158d71c8a103d60234532 *NEWS
 72a97d8c3d4091bfa8cfb8c92904003e *R/CreateNodeAST.R
@@ -39,11 +39,11 @@ cf122bb2ef6b1a64346c33db36eda59d *inst/include/etr_bits/Core/Chol.hpp
 1c39d1b83c01bba46f0071756dfb2230 *inst/include/etr_bits/Core/Diag.hpp
 e5a4277929df3486389b2c812f42e3d5 *inst/include/etr_bits/Core/MatMul.hpp
 83447ced8d897dee5117f94c960cb4ee *inst/include/etr_bits/Core/Reflection.hpp
-033f7dc7061113a59699d904bbee680a *inst/include/etr_bits/Core/Scalars.hpp
+595ad1b6ae9aeb999fad3ba9ad15d496 *inst/include/etr_bits/Core/Scalars.hpp
 7430ace8c340f14712abb7c01ab6305d *inst/include/etr_bits/Core/Solve.hpp
 df5da612d1bc4b941939041d9e16d195 *inst/include/etr_bits/Core/Transpose.hpp
 c7a8d6521dffa2066cd4031ef9047d25 *inst/include/etr_bits/Core/TriSolve.hpp
-b68e29d8eae5c11fa0c3f1b060649fef *inst/include/etr_bits/Core/Types.hpp
+1d8484057cc14c734c2f26b67bf27a4b *inst/include/etr_bits/Core/Types.hpp
 730609ed5b3422d5c9ec9167e78e445e *inst/include/etr_bits/Core/Uniroot.hpp
 57087d281f85e72a3736cf6a72611ea8 *inst/include/etr_bits/Core/nnls.hpp
 b1dfda94a6a59965d1a4d478c7473513 *inst/include/etr_bits/Derivatives.hpp
@@ -129,7 +129,7 @@ cba4a2459544a0e696d99f7c5ba7d44c *src/tests_assign_Array_to_Scalars.cpp
 02b76e4ec5702380f3389fb1e591f067 *src/tests_diag.cpp
 42c3cfd5231ca4c0c4d7483a1f6fd55e *src/tests_lbfgsb.cpp
 df40ef4003f67ab22972ee63b77ff335 *src/tests_nnls.cpp
-e8791853881240e0a74dd6bf5cc1fd68 *src/tests_scalar_types.cpp
+beec5e42e5fa30a1c6d92803a6dd65c5 *src/tests_scalar_types.cpp
 c5a78ca2afeaf534f52fff3bd9d7f5b9 *src/tests_solve.cpp
 249c9b9c829e4d25fa4e47a95f21ec2b *src/tests_transpose.cpp
 b81e45116039f583818e048c9ca07e44 *src/tests_trisolve.cpp

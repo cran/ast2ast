@@ -1071,31 +1071,31 @@ Concepts for sclars
 --------------------------------------------------------------------------------------------------
 */
 template<typename T> concept IsArith =
-std::same_as<bare_t<T>, Logical> ||
-std::same_as<bare_t<T>, Integer> ||
-std::same_as<bare_t<T>, Double> ||
-std::same_as<bare_t<T>, ReverseDouble> ||
-std::same_as<bare_t<T>, Dual>;
+IS<bare_t<T>, Logical> ||
+IS<bare_t<T>, Integer> ||
+IS<bare_t<T>, Double> ||
+IS<bare_t<T>, ReverseDouble> ||
+IS<bare_t<T>, Dual>;
 template <typename T> constexpr bool IsArithV = IsArith<T>;
 
 // Concept to detect refs to scalars
 template<typename T> concept IsArithRef =
-std::same_as<bare_t<T>, LogicalRef> ||
-std::same_as<bare_t<T>, IntegerRef> ||
-std::same_as<bare_t<T>, DoubleRef> ||
-std::same_as<bare_t<T>, DualRef>;
+IS<bare_t<T>, LogicalRef> ||
+IS<bare_t<T>, IntegerRef> ||
+IS<bare_t<T>, DoubleRef> ||
+IS<bare_t<T>, DualRef>;
 template <typename T> constexpr bool IsArithRefV = IsArithRef<T>;
 
-template<typename T> concept IsDouble = std::same_as<T, Double>;
-template<typename T> concept IsInteger = std::same_as<T, Integer>;
-template<typename T> concept IsLogical = std::same_as<T, Logical>;
-template<typename T> concept IsDual = std::same_as<T, Dual>;
-template<typename T> concept IsReverseDouble = std::same_as<T, ReverseDouble>;
+template<typename T> concept IsDouble = IS<T, Double>;
+template<typename T> concept IsInteger = IS<T, Integer>;
+template<typename T> concept IsLogical = IS<T, Logical>;
+template<typename T> concept IsDual = IS<T, Dual>;
+template<typename T> concept IsReverseDouble = IS<T, ReverseDouble>;
 
-template<typename T> concept IsDoubleRef = std::same_as<T, DoubleRef>;
-template<typename T> concept IsIntegerRef = std::same_as<T, IntegerRef>;
-template<typename T> concept IsLogicalRef = std::same_as<T, LogicalRef>;
-template<typename T> concept IsDualRef = std::same_as<T, DualRef>;
+template<typename T> concept IsDoubleRef = IS<T, DoubleRef>;
+template<typename T> concept IsIntegerRef = IS<T, IntegerRef>;
+template<typename T> concept IsLogicalRef = IS<T, LogicalRef>;
+template<typename T> concept IsDualRef = IS<T, DualRef>;
 
 /*
 --------------------------------------------------------------------------------------------------
@@ -1126,6 +1126,18 @@ concept AllScalarIndices = NonEmpty<Args...> && (ScalarIndex<Args> && ...);
 
 template <typename... Args>
 concept HasNonScalarIndex = (!ScalarIndex<Args> || ...);
+
+// static_cast<int> on a NaN/Inf/out-of-range double is UB (caught by
+// UBSan on CRAN's M1 check). R's as.integer() maps these to NA instead.
+inline int double_to_int_na(double v, bool& is_na) {
+  if (!std::isfinite(v) ||
+      v < static_cast<double>(std::numeric_limits<int>::min()) ||
+      v > static_cast<double>(std::numeric_limits<int>::max())) {
+    is_na = true;
+    return 0;
+  }
+  return static_cast<int>(v);
+}
 
 struct Logical {
   bool val;
@@ -1264,11 +1276,11 @@ struct Integer {
       val = arr_val.val;
       is_na = arr_val.is_na;
     } else if constexpr(IS<inner, ReverseDouble>) {
-      val = static_cast<int>(arr_val.get_val_from_tape());
       is_na = arr_val.is_na;
+      val = double_to_int_na(arr_val.get_val_from_tape(), is_na);
     } else {
-      val = static_cast<int>(arr_val.val);
       is_na = arr_val.is_na;
+      val = double_to_int_na(arr_val.val, is_na);
     }
     return *this;
   }
@@ -1662,9 +1674,9 @@ inline Logical::Logical(ReverseDouble v) : val(static_cast<bool>(v.get_val_from_
 inline Integer::Integer() : val(0), is_na(false) {}
 inline Integer::Integer(int v) : val(v), is_na(false) {}
 inline Integer::Integer(Logical v) : val(static_cast<int>(v.val)), is_na(v.is_na) {}
-inline Integer::Integer(Double v) : val(static_cast<int>(v.val)), is_na(v.is_na) {}
-inline Integer::Integer(Dual v) : val(static_cast<int>(v.val)), is_na(v.is_na) {}
-inline Integer::Integer(ReverseDouble v) : val(static_cast<int>(v.get_val_from_tape())), is_na(v.is_na) {}
+inline Integer::Integer(Double v) : val(0), is_na(v.is_na) { val = double_to_int_na(v.val, is_na); }
+inline Integer::Integer(Dual v) : val(0), is_na(v.is_na) { val = double_to_int_na(v.val, is_na); }
+inline Integer::Integer(ReverseDouble v) : val(0), is_na(v.is_na) { val = double_to_int_na(v.get_val_from_tape(), is_na); }
 
 inline Double::Double() : val(0.0), is_na(false) {}
 inline Double::Double(double v) : val(v), is_na(false) {}
@@ -3048,8 +3060,9 @@ struct IntegerRef {
     return *this;
   }
   template<typename T> requires (IsArithV<T> || IsArithRefV<T>) IntegerRef& operator=(const T& x) {
-    *p_val = static_cast<int>(get_val(x));
-    if (p_na) *p_na = get_scalar_val(x).is_na;
+    bool na = get_scalar_val(x).is_na;
+    *p_val = double_to_int_na(static_cast<double>(get_val(x)), na);
+    if (p_na) *p_na = na;
     return *this;
   }
   explicit inline IntegerRef(int* v, bool* n = nullptr);

@@ -952,4 +952,17 @@ void test_scalar_assignment() {
     ReverseDouble dst;
     dst = src; compare(dst, create_reverse_double(9.0, false));
   }
+
+  // real NaN (is_na == false, val == NaN) converting to Integer must become
+  // NA instead of UB-casting (CRAN M1 UBSan caught this, see Scalars.hpp).
+  {
+    compare(Integer(Double::NaN()), Integer::NA());
+    compare(Integer(Dual::NaN()), Integer::NA());
+    compare(Integer(ReverseDouble::NaN()), Integer::NA());
+
+    int iv = 7; bool ina = false;
+    IntegerRef ir(&iv, &ina);
+    ir = Double::NaN();
+    ass<"NaN through IntegerRef assignment becomes NA">(ina);
+  }
 }
