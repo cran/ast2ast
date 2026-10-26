@@ -1,3 +1,92 @@
+# Argument names for matching named arguments like R (#48): R's names,
+# reduced to the arguments ast2ast supports, in ast2ast's positional order.
+# Not listed: no named arguments. "...": the function reads its names itself.
+r_arg_names <- list(
+  # allocation / sequences
+  "vector" = c("mode", "length"),
+  "numeric" = "length", "integer" = "length", "logical" = "length",
+  "matrix" = c("data", "nrow", "ncol"),
+  "array" = c("data", "dim"),
+  "rep" = c("x", "times"),
+  "seq_len" = "length.out",
+  "seq_along" = "along.with",
+  "c" = "...",
+  # one-argument math / helpers
+  "sin" = "x", "asin" = "x", "sinh" = "x", "cos" = "x", "acos" = "x", "cosh" = "x",
+  "tan" = "x", "atan" = "x", "tanh" = "x", "log" = "x", "sqrt" = "x", "abs" = "x",
+  "sign" = "x", "exp" = "x", "floor" = "x", "ceiling" = "x", "trunc" = "x", "round" = "x",
+  "length" = "x", "dim" = "x", "nrow" = "x", "ncol" = "x",
+  "is.na" = "x", "is.nan" = "x", "is.infinite" = "x", "is.finite" = "x",
+  "as.numeric" = "x", "as.integer" = "x", "as.logical" = "x",
+  "print" = "x",
+  # reductions / transforms
+  "mean" = "x", "cumsum" = "x", "rev" = "x", "which" = "x", "which.max" = "x", "which.min" = "x",
+  "colSums" = "x", "rowSums" = "x", "colMeans" = "x", "rowMeans" = "x",
+  "sort" = c("x", "decreasing"),
+  "ifelse" = c("test", "yes", "no"),
+  # linear algebra
+  "t" = "x", "chol" = "x", "crossprod" = "x", "tcrossprod" = "x", "det" = "x",
+  "diag" = c("x", "nrow", "ncol"),
+  "get_diag" = "x",
+  "solve" = c("a", "b"),
+  "backsolve" = c("r", "x"),
+  "forwardsolve" = c("l", "x"),
+  # interpolation / solvers / optimizers
+  "cmr" = c("point", "x", "y"),
+  "uniroot" = c("f", "interval", "tol", "maxiter", "data"),
+  "nnls" = c("a", "b"),
+  "lbfgsb" = c("f", "x", "lower", "upper", "maxit", "factr", "pgtol", "lmm", "data"),
+  "pso" = c("f", "lower", "upper", "ngen", "npop", "error_threshold", "global", "seed", "data"),
+  "jacobian" = "...", "jacobian_sparse" = "...", "jacobian_banded" = "...",
+  # functionals
+  "Reduce" = c("f", "x"),
+  "Filter" = c("f", "x"),
+  "apply" = c("f", "MARGIN", "x")
+)
+
+# R-like matching (#48): exact names fill their slot, the unnamed rest fills
+# the free slots in order. Returns the new argument order or an error string.
+match_call_args <- function(fct, given, expected) {
+  n <- length(given)
+  if (is.null(given) || all(given == "") || identical(expected, "...")) return(seq_len(n))
+  if (all(is.na(expected))) return(sprintf("%s does not take named arguments", fct))
+  slots <- rep(NA_integer_, max(length(expected), n))
+  for (i in which(given != "")) {
+    idx <- match(given[[i]], expected)
+    if (is.na(idx)) {
+      return(sprintf("Unknown argument '%s' for %s%s", given[[i]], fct, did_you_mean(given[[i]], expected)))
+    }
+    if (!is.na(slots[idx])) return(sprintf("Argument '%s' of %s is given twice", given[[i]], fct))
+    slots[idx] <- i
+  }
+  for (i in which(given == "")) slots[which(is.na(slots))[1L]] <- i
+  order <- slots[seq_len(n)]
+  if (anyNA(order)) {
+    return(sprintf("Argument '%s' of %s is missing, but a later argument is given",
+                   expected[which(is.na(order))[1L]], fct))
+  }
+  order
+}
+
+# Appends name = default for every slot that is neither named nor filled by an
+# unnamed argument; match_call_args sorts them afterwards
+fill_default_args <- function(code, operator, function_registry) {
+  defaults <- function_registry$get_defaults(operator)
+  if (is.null(defaults)) return(code)
+  expected <- function_registry$expected_arg_names(operator)
+  given <- names(code)[-1L]
+  if (is.null(given)) given <- rep("", length(code) - 1L)
+  filled <- rep(FALSE, length(expected))
+  idx <- match(given[given != ""], expected)
+  filled[idx[!is.na(idx)]] <- TRUE
+  free <- which(!filled)
+  filled[free[seq_len(min(sum(given == ""), length(free)))]] <- TRUE
+  for (nm in names(defaults)) {
+    if (!filled[[match(nm, expected)]]) code[[nm]] <- defaults[[nm]]
+  }
+  code
+}
+
 # Singleton class holding all information of a function required
 # ========================================================================
 Functions <- R6::R6Class(
@@ -11,13 +100,17 @@ Functions <- R6::R6Class(
     groups = NULL,
     cpp_names = NULL,
     deriv_possibles = NULL,
+    thread_safes = NULL,
     valid_fn_contexts = NULL,
     docus = list(),
+    defaults = list(),
 
     initialize = function() {},
     add = function(name, num_args, arg_names, infer_fct,
                    check_fct, group, cpp_name, deriv_possible = TRUE,
-                   valid_fn_context = FALSE, docu = NULL) {
+                   valid_fn_context = FALSE, docu = NULL, thread_safe = TRUE,
+                   defaults = NULL) {
+      if (!is.null(defaults)) self$defaults[[name]] <- defaults
       self$function_names <- c(self$function_names, name)
       self$number_of_args[[length(self$number_of_args) + 1]] <- num_args
       self$arg_names[[length(self$arg_names) + 1]] <- arg_names
@@ -26,6 +119,7 @@ Functions <- R6::R6Class(
       self$groups <- c(self$groups, group)
       self$cpp_names <- c(self$cpp_names, cpp_name)
       self$deriv_possibles <- c(self$deriv_possibles, deriv_possible)
+      self$thread_safes <- c(self$thread_safes, thread_safe)
       self$valid_fn_contexts <- c(self$valid_fn_contexts, valid_fn_context)
       # single-bracket + list() so a NULL docu keeps its slot (never `[[`)
       self$docus[length(self$docus) + 1] <- list(docu)
@@ -36,6 +130,7 @@ Functions <- R6::R6Class(
       self$number_of_args[which(self$function_names == name)]
     },
     expected_arg_names = function(name) {
+      if (name %in% names(r_arg_names)) return(r_arg_names[[name]])
       self$arg_names[which(self$function_names == name)][[1]]
     },
     check_fct = function(name) {
@@ -46,6 +141,10 @@ Functions <- R6::R6Class(
     },
     get_cpp_name = function(name) {
       self$cpp_names[which(self$function_names == name)]
+    },
+    # named list: argument name -> R expression filled in when the argument is missing
+    get_defaults = function(name) {
+      self$defaults[[name]]
     },
     get_docu = function(name) {
       idx <- which(self$function_names == name)
@@ -60,6 +159,14 @@ Functions <- R6::R6Class(
         return(TRUE)
       }
       self$deriv_possibles[idx]
+    },
+    # FALSE: touches the R API at runtime (e.g. R_alloc), so not callable inside pmap
+    thread_safe = function(name) {
+      idx <- which(self$function_names == name)
+      if (length(idx) == 0) {
+        return(TRUE)
+      }
+      isTRUE(self$thread_safes[idx])
     },
     valid_fn_context = function(name) {
       idx <- which(self$function_names == name)
@@ -99,6 +206,9 @@ Functions <- R6::R6Class(
   )
 )
 function_registry_global <- Functions$new()
+
+# Helper functions
+# ===================================================================================
 mock <- function(node, vars_types_list, info_env) {}
 
 is_type <- function(node, vars_types_list, check_type) {
@@ -169,39 +279,76 @@ is_data_structs <- function(node, vars_types_list, data_structs) {
     node$internal_type$get_data_struct() %in% data_structs
   }
 }
-is_vec_mat_or_array <- function(node, vars_types_list, data_structs) {
-  is_data_structs(node, vars_types_list,
-    c("matrix", "vector", "vec", "mat", "array",
-      "borrow_vec", "borrow_vector", "borrow_mat", "borrow_matrix", "borrow_array")
-  )
+is_vec_mat_or_array_internal_type <- function(node, vars_types_list) {
+  allowed <- c("matrix", "vector", "vec", "mat", "array", "borrow_vec", "borrow_vector", "borrow_mat", "borrow_matrix", "borrow_array")
+  if (inherits(node, "variable_node")) {
+    res <- is_data_structs(node, vars_types_list, allowed)
+    return(res)
+  }
+  it <- node$internal_type
+  if (!inherits(it, "pre_type_node")) {
+    return(FALSE)
+  }
+  data_struct <- it$get_data_struct()
+  if (!(data_struct %in% c("vector", "matrix", "array"))) return(FALSE)
+  TRUE
 }
-is_vec <- function(node, vars_types_list) {
-  if (inherits(node, "unary_node") && node$operator %in% c("numeric", "integer", "logical")) return(TRUE)
-  if (inherits(node, "function_node") && node$operator == "vector") return(TRUE)
-  is_data_structs(node, vars_types_list,
-    c("vector", "vec", "borrow_vec", "borrow_vector")
-  )
+is_vec_internal_type <- function(node, vars_types_list) {
+  if (inherits(node, "variable_node")) {
+    res <- is_data_structs(node, vars_types_list, c("vector", "vec", "borrow_vec", "borrow_vector"))
+    return(res)
+  }
+  it <- node$internal_type
+  if (!inherits(it, "pre_type_node")) {
+    return(FALSE)
+  }
+  data_struct <- it$get_data_struct()
+  if (data_struct != "vector") return(FALSE)
+  TRUE 
 }
-is_mat <- function(node, vars_types_list) {
-  if (inherits(node, "function_node") && node$operator == "matrix") return(TRUE)
-  is_data_structs(node, vars_types_list,
-    c("matrix", "mat", "borrow_matrix", "borrow_mat")
-  )
+is_mat_internal_type <- function(node, vars_types_list) {
+  if (inherits(node, "variable_node")) {
+    res <- is_data_structs(node, vars_types_list, c("matrix", "mat", "borrow_matrix", "borrow_mat"))
+    return(res)
+  }
+  it <- node$internal_type
+  if (!inherits(it, "pre_type_node")) {
+    return(FALSE)
+  }
+  data_struct <- it$get_data_struct()
+  if (data_struct != "matrix") return(FALSE)
+  TRUE 
 }
-is_array <- function(node, vars_types_list) {
-  if (inherits(node, "function_node") && node$operator == "array") return(TRUE)
-  is_data_structs(node, vars_types_list,
-    c("array", "borrow_array")
-  )
+is_array_internal_type <- function(node, vars_types_list) {
+  if (inherits(node, "variable_node")) {
+    res <- is_data_structs(node, vars_types_list, c("array", "borrow_array"))
+    return(res)
+  }
+  it <- node$internal_type
+  if (!inherits(it, "pre_type_node")) {
+    return(FALSE)
+  }
+  data_struct <- it$get_data_struct()
+  if (data_struct != "array") return(FALSE)
+  TRUE 
 }
-compare_types_passed_to_fn <- function(node, type1, type2) {
+
+compare_types_passed_to_fn <- function(node, type1, type2, allow_borrow_to_owned = FALSE) {
 
   # nothing to compare against -- infer_fct already flagged the real problem
   if (is.null(type1) || is.null(type2)) return()
 
   if (inherits(type1, "pre_type_node") && inherits(type2, "pre_type_node")) {
+    is_ds <- type2$get_data_struct_verbose()
+    should_ds <- type1$get_data_struct_verbose()
     if (type1$get_data_struct() != type2$get_data_struct()) {
       node$error <- sprintf("Found a type mismatch: expected %s got %s", type1$get_data_struct(), type2$get_data_struct())
+    }
+    # NOTE: no borrow_to_owned by default; uniroot & co. deduce one T from fn and data
+    else if (!same_data_struct(is_ds, should_ds) &&
+      !(allow_borrow_to_owned && borrow_to_owned(is_ds, should_ds))) {
+      node$error <- sprintf("Found a type mismatch: expected %s got %s",
+        normalize_data_struct(type1$get_data_struct_verbose()), normalize_data_struct(type2$get_data_struct_verbose()))
     }
     else if (type1$get_data_struct() == "collection" && type2$get_data_struct() == "collection") {
       nt_t1 <- type1$data_struct$type
@@ -228,6 +375,8 @@ compare_types_passed_to_fn <- function(node, type1, type2) {
 
 }
 
+# Check functions
+# ===================================================================================
 check_functional_fn <- function(fn, expect, label) {
   af <- fn$args_f
   nm <- fn$fct_name
@@ -308,8 +457,9 @@ check_assignment <- function(node, vars_types_list, info_env) {
       line <- try(node$stringify(), silent = TRUE)
       if (inherits(line, "try-error")) line <- ""
       warning(sprintf(
-        "%s\nTypes do not match perfectly: On the left side: %s(%s) and on the right side: %s(%s)",
-        line, type$get_data_struct(), type$get_base_type(), right_node_type$get_data_struct(), right_node_type$get_base_type()
+        "%s\nVariable %s has the fixed type %s(%s), but a %s(%s) is assigned to it",
+        line, find_var_lhs(node), type$get_data_struct(), type$get_base_type(),
+        right_node_type$get_data_struct(), right_node_type$get_base_type()
       ))
     }
   }
@@ -321,19 +471,6 @@ check_assignment <- function(node, vars_types_list, info_env) {
   }
 }
 
-check_unary <- function(node, vars_types_list, info_env) {
-  if (is_charNANaNInf(node$obj, vars_types_list)) {
-    node$error <- sprintf("You cannot use character/NA/NaN/Inf entries in %s", node$operator)
-  }
-}
-check_binary <- function(node, vars_types_list, info_env) {
-  if (is_charNANaNInf(node$left_node, vars_types_list)) {
-    node$error <- sprintf("You cannot use character/NA/NaN/Inf entries in %s", node$operator)
-  }
-  if (is_charNANaNInf(node$right_node, vars_types_list)) {
-    node$error <- sprintf("You cannot use character/NA/NaN/Inf entries in %s", node$operator)
-  }
-}
 check_subsetting <- function(node, vars_types_list, info_env) {
   if (inherits(node, "binary_node")) {
     left_internal_type <- node$left_node$internal_type
@@ -344,7 +481,9 @@ check_subsetting <- function(node, vars_types_list, info_env) {
     if (left_internal_type$get_data_struct() == "scalar") {
       cfp <- if (inherits(node$left_node, "binary_node")) {
         choose_fast_path(node$right_node$internal_type)
-      } else FALSE
+      } else {
+        FALSE
+      }
       if (inherits(node, "binary_node") && inherits(node$left_node, "binary_node") &&
         is_at_or_double_bracket(node$operator) && is_at_or_double_bracket(node$left_node$operator)) {
         node$error <- sprintf(
@@ -362,14 +501,13 @@ check_subsetting <- function(node, vars_types_list, info_env) {
           reason, node$operator
         )
       } else {
+        # NOTE: maybe to be 100% sure check that this is really a variable which is tried to be subsetted
         node$error <- "You cannot subset a scalar value"
       }
-    }
-    if (!is_vec_mat_or_array(node$left_node, vars_types_list) && !collection_ok) {
+    } else if (!is_vec_mat_or_array_internal_type(node$left_node, vars_types_list) && !collection_ok) {
       node$error <- "You can only subset variables of type array, matrix or vector"
-    }
-    if (is_charNANaNInf(node$right_node, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries for subsetting"
+      # TODO: this requires a better error message. As when someone writes collection_var[1] than the user gets told
+      # that one can only subset arrays, matrices or vectors. This sounds like collections cannot be subsetted at all
     }
   } else if (inherits(node, "function_node")) {
     left_internal_type <- node$args[[1]]$internal_type
@@ -377,7 +515,9 @@ check_subsetting <- function(node, vars_types_list, info_env) {
     if (left_internal_type$get_data_struct() == "scalar") {
       cfp <- if (inherits(node$args[[1]], c("binary_node", "function_node"))) {
         choose_fast_path(lapply(node$args[-1], function(a) a$internal_type))
-      } else FALSE
+      } else {
+        FALSE
+      }
       if (inherits(node$args[[1]], c("binary_node", "function_node")) &&
         is_at_or_double_bracket(node$operator) && is_at_or_double_bracket(node$args[[1]]$operator)) {
         node$error <- sprintf(
@@ -395,13 +535,15 @@ check_subsetting <- function(node, vars_types_list, info_env) {
           reason, node$operator
         )
       } else {
+        # TODO: see above
         node$error <- "You cannot subset a scalar value"
       }
-    }
-    if (!is_vec_mat_or_array(node$args[[1]], vars_types_list)) {
+    } else if (!is_vec_mat_or_array_internal_type(node$args[[1]], vars_types_list)) {
+      # TODO: see above
       node$error <- "You can only subset variables of type array, matrix or vector"
     }
     for (i in 2L:length(node$args)) {
+      # TODO: see above
       if (is_charNANaNInf(node$args[[i]], vars_types_list)) {
         node$error <- "You cannot use character/NA/NaN/Inf entries for subsetting"
       }
@@ -409,25 +551,132 @@ check_subsetting <- function(node, vars_types_list, info_env) {
   }
 }
 
-check_operand_type <- function(type, node, side = "", allow_collection = FALSE) {
+check_operand_type <- function(type, node, side = "", allow_collection = FALSE,
+                               allow_char = FALSE, allow_NA_NaN_Inf = FALSE) {
   if (is.character(type)) return(type) # propagate a nested infer() error instead of masking it below
   label <- if (side == "") "type" else paste0(side, " type")
-  if (inherits(type, c("new_type_node", "fn_node"))) {
+  if (inherits(type, "new_type_node")) {
+    return(sprintf("Found unsupported %s %s in: %s", label, type$name, node$stringify()))
+  }
+  if (inherits(type, "fn_node")) {
     return(sprintf("Found unsupported %s in: %s", label, node$stringify()))
   }
   if (!inherits(type, "pre_type_node")) {
     return(sprintf("Found unsupported %s in: %s", label, node$stringify()))
   }
+  if (type$get_data_struct() != "collection") {
+    rejected <- c(if (!allow_char) "character", if (!allow_NA_NaN_Inf) c("NA", "NaN", "Inf"))
+    if (type$get_base_type() %in% rejected) {
+      return(sprintf("You cannot use character/NA/NaN/Inf entries in %s in: %s", label, node$stringify()))
+    }
+  }
   if (!allow_collection && type$get_data_struct() == "collection") {
-    return(sprintf("Found unsupported %s in: %s", label, node$stringify()))
+    return(sprintf("Found unsupported %s collection(%s) in: %s", label, type$data_struct$type, node$stringify()))
   }
   NULL
 }
+check_matrix_arg <- function(node, vars_types_list, info_env) {
+  if (!is_mat_internal_type(node$obj, vars_types_list)) {
+    node$error <- sprintf("You can only call %s on a matrix", node$operator)
+  }
+}
+
+# Infer functions
+# ===================================================================================
+# y[["S30"]] on a named_vec -> y[[13L]]; the literal node is replaced in place
+resolve_name_index <- function(node, left_type_node) {
+  idx_node <- node$right_node
+  if (!is_name_index(idx_node)) return(NULL)
+  layout <- layout_of(left_type_node)
+  if (is.null(layout)) {
+    return(sprintf("String index %s is only allowed on a named_vec / named_borrow_vec in: %s",
+                   idx_node$stringify(), node$stringify()))
+  }
+  if (layout$kind %in% c("matrix", "array")) {
+    return(sprintf("%s layout %s: index every dimension, e.g. m[[\"row\", \"col\"]], in: %s",
+                   layout$kind, layout$name, node$stringify()))
+  }
+  res <- resolve_names(idx_node, layout$names, layout, "", node)
+  if (is.character(res)) return(res)
+  node$right_node <- res
+  NULL
+}
+
+is_character_literal <- function(node) {
+  inherits(node, "literal_node") && node$literal_type == "character"
+}
+
+# "a" or c("a", "b", 3L); a c() without strings stays a plain index
+is_name_index <- function(idx_node) {
+  if (is_character_literal(idx_node)) return(TRUE)
+  inherits(idx_node, "function_node") && idx_node$operator == "c" &&
+    any(vapply(idx_node$args, is_character_literal, logical(1L)))
+}
+
+# returns the resolved index node or an error string
+resolve_names <- function(idx_node, names, layout, where, node) {
+  if (is_character_literal(idx_node)) {
+    return(name_to_index_node(idx_node, names, layout, where, node))
+  }
+  for (i in seq_along(idx_node$args)) {
+    if (!is_character_literal(idx_node$args[[i]])) next
+    res <- name_to_index_node(idx_node$args[[i]], names, layout, where, node)
+    if (is.character(res)) return(res)
+    idx_node$args[[i]] <- res
+  }
+  idx_node
+}
+
+# m[["t1", "S30"]] / a[["b", i, "t3"]] / m[c("t1", "t2"), "S30"] on a named
+# matrix/array: each string is resolved with the names of its dimension
+resolve_dim_indices <- function(node, obj_type) {
+  idx_args <- seq_along(node$args)[-1L]
+  is_name <- vapply(node$args[idx_args], is_name_index, logical(1L))
+  if (!any(is_name)) return(NULL)
+  layout <- layout_of(obj_type)
+  if (is.null(layout) || !(layout$kind %in% c("matrix", "array"))) {
+    return(sprintf("String indices are only allowed on a named_mat / named_array in: %s", node$stringify()))
+  }
+  if (length(idx_args) != length(layout$dimnames)) {
+    return(sprintf("%s layout %s has %d dimensions, found %d indices in: %s",
+                   layout$kind, layout$name, length(layout$dimnames), length(idx_args), node$stringify()))
+  }
+  for (k in seq_along(idx_args)[is_name]) {
+    names_k <- layout$dimnames[[k]]
+    if (is.null(names_k)) {
+      return(sprintf("Dimension %d of layout %s has no names in: %s", k, layout$name, node$stringify()))
+    }
+    res <- resolve_names(node$args[[idx_args[[k]]]], names_k, layout, sprintf(" (dimension %d)", k), node)
+    if (is.character(res)) return(res)
+    node$args[[idx_args[[k]]]] <- res
+  }
+  NULL
+}
+
+# a string literal -> integer literal node via the names of one dimension
+name_to_index_node <- function(idx_node, names, layout, where, node) {
+  value_name <- remove_double_quotes(idx_node$name)
+  idx <- match(value_name, names)
+  if (is.na(idx)) {
+    distance <- utils::adist(value_name, names)[1L, ]
+    closest <- names[which.min(distance)]
+    return(sprintf("Unknown name '%s'%s for layout %s. Did you mean '%s'? In: %s",
+                   value_name, where, layout$name, closest, node$stringify()))
+  }
+  new_idx <- literal_node$new(as.integer(idx))
+  for (field in c("context", "real_type", "pre_translate_line", "location", "source_line", "wrap")) {
+    new_idx[[field]] <- idx_node[[field]]
+  }
+  new_idx
+}
+
 
 infer_subsetting <- function(node, vars_list, info_env, function_registry) {
   if (inherits(node, "binary_node")) {
     left_type_node <- infer(node$left_node, vars_list, info_env, function_registry)
     err <- check_operand_type(left_type_node, node, "left", allow_collection = TRUE)
+    if (!is.null(err)) return(err)
+    err <- resolve_name_index(node, left_type_node)
     if (!is.null(err)) return(err)
     right_type_node <- infer(node$right_node, vars_list, info_env, function_registry)
     err <- check_operand_type(right_type_node, node, "right")
@@ -454,6 +703,8 @@ infer_subsetting <- function(node, vars_list, info_env, function_registry) {
     node$internal_type <- t
     return(t)
   } else if (inherits(node, "function_node")) {
+    err <- resolve_dim_indices(node, infer(node$args[[1L]], vars_list, info_env, function_registry))
+    if (!is.null(err)) return(err)
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
@@ -505,13 +756,32 @@ infer_unary_math <- function(node, vars_list, info_env, function_registry) {
 }
 infer_unary_minus <- function(node, vars_list, info_env, function_registry) {
   inner_type <- infer(node$obj, vars_list, info_env, function_registry)
-  err <- check_operand_type(inner_type, node)
+  # -Inf inside c(); a bare scalar Inf is still rejected by type_list_checks
+  err <- check_operand_type(inner_type, node, allow_NA_NaN_Inf = TRUE)
   if (!is.null(err)) return(err)
   base_type <- inner_type$get_base_type()
   if (base_type == "logical") base_type <- "int"
   t <- make_inferred_type(inner_type$get_data_struct(), base_type, info_env$r_fct, info_env$real_type) 
   node$internal_type <- t
   return(t)
+}
+is_range_type <- function(t) {
+  inherits(t, "pre_type_node") && inherits(t$data_struct, "range_vec")
+}
+strip_range <- function(t) {
+  if (!is_range_type(t)) return(t)
+  t <- t$clone(deep = TRUE)
+  t$set_data_struct("vector")
+  t
+}
+is_int_scalar_type <- function(t) {
+  inherits(t, "pre_type_node") && t$get_data_struct() == "scalar" &&
+    t$get_base_type() %in% c("int", "integer")
+}
+# mirrors IsAffineRangeOp in BinaryCalculations.hpp: range +-* int scalar stays a range
+is_affine_range_op <- function(operator, l, r) {
+  operator %in% c("+", "-", "*") &&
+    ((is_range_type(l) && is_int_scalar_type(r)) || (is_int_scalar_type(l) && is_range_type(r)))
 }
 infer_binary_math <- function(node, vars_list, info_env, function_registry) {
   left_type <- infer(node$left_node, vars_list, info_env, function_registry)
@@ -520,8 +790,13 @@ infer_binary_math <- function(node, vars_list, info_env, function_registry) {
   right_type <- infer(node$right_node, vars_list, info_env, function_registry)
   err <- check_operand_type(right_type, node, "right")
   if (!is.null(err)) return(err)
-  l_type <- left_type$clone(deep = TRUE)
-  r_type <- right_type$clone(deep = TRUE)
+  if (is_affine_range_op(node$operator, left_type, right_type)) {
+    t <- make_inferred_type("range", "integer", info_env$r_fct, info_env$real_type)
+    node$internal_type <- t
+    return(t)
+  }
+  l_type <- strip_range(left_type)$clone(deep = TRUE)
+  r_type <- strip_range(right_type)$clone(deep = TRUE)
   if (l_type$get_base_type() == "logical") l_type$set_base_type("integer")
   if (r_type$get_base_type() == "logical") r_type$set_base_type("integer")
   if (node$operator %in% c("/", "^")) {
@@ -586,6 +861,7 @@ infer_and_or_vector <- function(node, vars_list, info_env, function_registry) {
   left_type <- infer(node$left_node, vars_list, info_env, function_registry)
   err <- check_operand_type(left_type, node, "left")
   if (!is.null(err)) return(err)
+  # TODO: the pattern in the next 3 lines is super common. --> possible to abstract it
   right_type <- infer(node$right_node, vars_list, info_env, function_registry)
   err <- check_operand_type(right_type, node, "right")
   if (!is.null(err)) return(err)
@@ -613,15 +889,8 @@ infer_num_int_log <- function(node, vars_list, info_env, function_registry) {
 # scalar reduction keeping the input base type (min, max)
 infer_reduce_keep_type <- function(node, vars_list, info_env, function_registry) {
   inner <- infer(node$obj, vars_list, info_env, function_registry)
-  if (inherits(inner, c("new_type_node", "fn_node"))) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (!inherits(inner, "pre_type_node")) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (inner$get_data_struct() == "collection") {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
+  err <- check_operand_type(inner, node)
+  if (!is.null(err)) return(err)
   t <- make_inferred_type("scalar", inner$get_base_type(), info_env$r_fct, info_env$real_type)
   node$internal_type <- t
   return(t)
@@ -630,108 +899,64 @@ infer_reduce_keep_type <- function(node, vars_list, info_env, function_registry)
 infer_reduce_fixed_type <- function(base) {
   function(node, vars_list, info_env, function_registry) {
     inner <- infer(node$obj, vars_list, info_env, function_registry)
-    if (inherits(inner, c("new_type_node", "fn_node"))) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (!inherits(inner, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (inner$get_data_struct() == "collection") {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("scalar", base, info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   }
 }
+# TODO: infer_whichi is supoer close to infer_reduce_fixed_type.
+# actually one just has to use it with base == "integer"
 infer_which <- function(node, vars_list, info_env, function_registry) {
   inner <- infer(node$obj, vars_list, info_env, function_registry)
-  if (inherits(inner, c("new_type_node", "fn_node"))) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (!inherits(inner, "pre_type_node")) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (inner$get_data_struct() == "collection") {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
+  err <- check_operand_type(inner, node)
+  if (!is.null(err)) return(err)
   t <- make_inferred_type("vector", "integer", info_env$r_fct, info_env$real_type)
   node$internal_type <- t
   return(t)
 }
+# TODO: see above comment about infer_which
 # sum keeps the type, except logical -> integer (R semantics); double stays double
 infer_sum <- function(node, vars_list, info_env, function_registry) {
   inner <- infer(node$obj, vars_list, info_env, function_registry)
-  if (inherits(inner, c("new_type_node", "fn_node"))) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (!inherits(inner, "pre_type_node")) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (inner$get_data_struct() == "collection") {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
+  err <- check_operand_type(inner, node)
+  if (!is.null(err)) return(err)
   base_type <- if (inner$get_base_type() %in% c("double", "numeric")) "double" else "integer"
   t <- make_inferred_type("scalar", base_type, info_env$r_fct, info_env$real_type)
   node$internal_type <- t
   return(t)
 }
 
+# TODO: see above
 # cumsum: like sum but length-preserving (vector), logical -> integer
 infer_cumsum <- function(node, vars_list, info_env, function_registry) {
   inner <- infer(node$obj, vars_list, info_env, function_registry)
-  if (inherits(inner, c("new_type_node", "fn_node"))) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (!inherits(inner, "pre_type_node")) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (inner$get_data_struct() == "collection") {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
+  err <- check_operand_type(inner, node)
+  if (!is.null(err)) return(err)
   base_type <- if (inner$get_base_type() %in% c("double", "numeric")) "double" else "integer"
   t <- make_inferred_type("vector", base_type, info_env$r_fct, info_env$real_type)
   node$internal_type <- t
   return(t)
 }
 
+# TODO: see above
 # colSums/rowSums/colMeans/rowMeans: matrix in, vector out, always double
 infer_margin_reduce <- function(node, vars_list, info_env, function_registry) {
   inner <- infer(node$obj, vars_list, info_env, function_registry)
-  if (inherits(inner, c("new_type_node", "fn_node"))) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (!inherits(inner, "pre_type_node")) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (inner$get_data_struct() == "collection") {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
+  err <- check_operand_type(inner, node)
+  if (!is.null(err)) return(err)
   t <- make_inferred_type("vector", "double", info_env$r_fct, info_env$real_type)
   node$internal_type <- t
   return(t)
 }
-check_matrix_arg <- function(node, vars_types_list, info_env) {
-  if (is_charNANaNInf(node$obj, vars_types_list)) {
-    node$error <- sprintf("You cannot use character/NA/NaN/Inf entries in %s", node$operator)
-  } else if (!is_mat(node$obj, vars_types_list)) {
-    node$error <- sprintf("You can only call %s on a matrix", node$operator)
-  }
-}
-
+# TODO: see above
 # sort: vector out, base type kept; arg 2 (decreasing) is optional
 infer_sort <- function(node, vars_list, info_env, function_registry) {
   types <- lapply(node$args, function(a) infer(a, vars_list, info_env, function_registry))
   inner <- types[[1]]
-  if (inherits(inner, c("new_type_node", "fn_node"))) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (!inherits(inner, "pre_type_node")) {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
-  if (inner$get_data_struct() == "collection") {
-    return(sprintf("Found unallowed type in: %s", node$stringify()))
-  }
+  err <- check_operand_type(inner, node)
+  if (!is.null(err)) return(err)
   t <- make_inferred_type("vector", inner$get_base_type(), info_env$r_fct, info_env$real_type)
   node$internal_type <- t
   return(t)
@@ -741,15 +966,8 @@ infer_sort <- function(node, vars_list, info_env, function_registry) {
 infer_ifelse <- function(node, vars_list, info_env, function_registry) {
   types <- lapply(node$args, function(a) infer(a, vars_list, info_env, function_registry))
   for (tp in types) {
-    if (inherits(tp, c("new_type_node", "fn_node"))) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (!inherits(tp, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (tp$get_data_struct() == "collection") {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(tp, node)
+    if (!is.null(err)) return(err)
   }
   rank <- c(logical = 1L, integer = 2L, int = 2L, double = 3L, numeric = 3L)
   yb <- types[[2]]$get_base_type()
@@ -765,6 +983,8 @@ infer_ifelse <- function(node, vars_list, info_env, function_registry) {
   return(t)
 }
 
+# Fill the registry
+# ===================================================================================
 function_registry_global$add(
   name = "type", num_args = 2, arg_names = c(NA, NA),
   infer_fct = function(node, vars_list, info_env, function_registry) { },
@@ -817,7 +1037,8 @@ function_registry_global$add(
   name = "for", num_args = 3, arg_names = c(NA, NA, NA),
   infer_fct = function(node, vars_list, info_env, function_registry) {
     temp <- infer(node$seq, vars_list, info_env, function_registry)
-    err <- check_operand_type(temp, node, allow_collection = TRUE)
+    # node$seq: the for node stringifies to the C++ loop
+    err <- check_operand_type(temp, node$seq, "sequence", allow_collection = TRUE)
     if (!is.null(err)) return(err)
     if (temp$get_data_struct() == "collection") {
       t <- temp$data_struct$element_type$clone()
@@ -828,12 +1049,10 @@ function_registry_global$add(
       node$i$internal_type <- t
       return(t)
     }
-    if (identical(temp$get_data_struct(), "scalar") &&
-        !identical(temp$get_base_type(), "character")) {
+    if (identical(temp$get_data_struct(), "scalar")) {
       # for (i in <scalar>) runs the body once in R; wrap the seq in c() so the
       # generated range-for iterates a length-1 vector instead of failing to
-      # compile on a non-iterable scalar. A character scalar is left alone so
-      # the for check_fct reports "cannot sequence over characters".
+      # compile on a non-iterable scalar.
       wrapped <- function_node$new()
       wrapped$operator <- "c"
       wrapped$context <- node$seq$context
@@ -848,17 +1067,13 @@ function_registry_global$add(
     node$i$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$seq, vars_types_list)) {
-      node$seq$error <- "You cannot sequence over characters/NA/NaN/Inf"
-    }
-  },
+  check_fct = mock,
   group = "for_node", cpp_name = "for"
 )
 function_registry_global$add(
   name = "while", num_args = 2, arg_names = c(NA, NA),
   infer_fct = function(node, vars_list, info_env, function_registry) {},
-  check_fct = mock,
+  check_fct = mock, # TODO: in while () --> where is checked that the expression in () is/can be converted to a bool?
   group = "while_node", cpp_name = "while"
 )
 function_registry_global$add(
@@ -886,35 +1101,16 @@ function_registry_global$add(
       temp <- infer(x, vars_list, info_env, function_registry)
       return(temp)
     })
-    for (i in seq_len(length(types_of_args))) {
-      toa <- types_of_args[[i]]
-      if (inherits(toa, "new_type_node")) {
-        return(sprintf("Found unexpected type %s for variable %s which is not supported in 'c'",
-          toa$get_data_struct(),
-          toa$get_name()
-        ))
-      }
-      if (inherits(toa, "fn_node")) {
-        return(sprintf("Found unexpected type inner function for variable %s which is not supported in 'c'",
-          toa$fct_name
-        ))
-      }
-      if (toa$get_data_struct() == "collection") {
-        return(sprintf("Found unexpected type collection containing %s for variable %s",
-          toa$data_struct$type,
-          toa$get_name()
-        ))
-      }
-      if (!inherits(toa, "pre_type_node")) {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
+    for (toa in types_of_args) {
+      err <- check_operand_type(toa, node, allow_NA_NaN_Inf = TRUE)
+      if (!is.null(err)) return(err)
     }
     types_of_args <- sapply(types_of_args, \(x) x$get_base_type())
     common_type <- "logical"
     if (any(types_of_args %in% c("int", "integer"))) {
       common_type <- "integer"
     }
-    if (any(types_of_args %in% c("double", "numeric"))) {
+    if (any(types_of_args %in% c("double", "numeric", "Inf", "NaN"))) {
       common_type <- "double"
     }
     t <- make_inferred_type("vector", common_type, info_env$r_fct, info_env$real_type)
@@ -923,20 +1119,8 @@ function_registry_global$add(
   },
   check_fct = function(node, vars_types_list, info_env) {
     if (length(node$args) == 0) {
+      # NOTE: might be possible. One could hard code that c() returns an empty numeric vector
       node$error <- "You cannot use c without any arguments"
-    }
-    for (i in seq_along(node$args)) {
-      if (inherits(node$args[[i]], "variable_node")) {
-        t <- vars_types_list[[node$args[[i]]$name]]
-        if (!inherits(t, "pre_type_node")) {
-          node$error <- sprintf("You cannot use entries of type %s in c", class(t))
-          return()
-        }
-      }
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in c"
-        return()
-      }
     }
   },
   group = "function_node", cpp_name = "etr::c"
@@ -955,21 +1139,25 @@ function_registry_global$add(
     if (left_base_type == "logical") left_base_type <- "integer"
     if (right_base_type == "logical") right_base_type <- "integer"
     common_type <- "integer"
+    data_struct <- "range"
     if (any(c(left_base_type, right_base_type) %in% c("double"))) {
       common_type <- "double"
+      data_struct <- "vector"
     }
-    t <- make_inferred_type("vector", common_type, info_env$r_fct, info_env$real_type)
+    t <- make_inferred_type(data_struct, common_type, info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "etr::colon"
 )
 function_registry_global$add(
   name = "seq_len", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
-    infer(node$obj, vars_list, info_env, function_registry)
-    t <- make_inferred_type("vector", "integer", info_env$r_fct, info_env$real_type)
+    inner <- infer(node$obj, vars_list, info_env, function_registry)
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
+    t <- make_inferred_type("range", "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
@@ -983,12 +1171,14 @@ function_registry_global$add(
 function_registry_global$add(
   name = "seq_along", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
-    infer(node$obj, vars_list, info_env, function_registry)
-    t <- make_inferred_type("vector", "integer", info_env$r_fct, info_env$real_type)
+    inner <- infer(node$obj, vars_list, info_env, function_registry)
+    err <- check_operand_type(inner, node, allow_collection = TRUE)
+    if (!is.null(err)) return(err)
+    t <- make_inferred_type("range", "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = check_unary,
+  check_fct = mock,
  group = "unary_node", cpp_name = "etr::seq_along"
 )
 function_registry_global$add(
@@ -1005,73 +1195,73 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "etr::rep"
 )
 function_registry_global$add(
   name = "sin", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::sin"
 )
 function_registry_global$add(
   name = "asin", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::asin"
 )
 function_registry_global$add(
   name = "sinh", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::sinh"
 )
 function_registry_global$add(
   name = "cos", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::cos"
 )
 function_registry_global$add(
   name = "acos", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::acos"
 )
 function_registry_global$add(
   name = "cosh", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::cosh"
 )
 function_registry_global$add(
   name = "tan", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::tan"
 )
 function_registry_global$add(
   name = "atan", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::atan"
 )
 function_registry_global$add(
   name = "tanh", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::tanh"
 )
 function_registry_global$add(
   name = "log", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::log"
 )
 function_registry_global$add(
   name = "sqrt", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::sqrt"
 )
 function_registry_global$add(
@@ -1080,75 +1270,69 @@ function_registry_global$add(
   # has exactly that behavior (used by unary `-`), reused here.
   name = "abs", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_minus,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::abs"
 )
 function_registry_global$add(
   # like floor/ceiling/trunc: always double, derivative 0 almost everywhere
   name = "sign", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::sign"
 )
 function_registry_global$add(
   name = "exp", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary,
+  check_fct = mock,
   group = "unary_node", cpp_name = "etr::exp"
 )
 function_registry_global$add(
   name = "^", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "etr::power"
 )
 function_registry_global$add(
   name = "+", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "+"
 )
 function_registry_global$add(
   name = "-", num_args = c(1, 2), arg_names = c(NA, NA),
   infer_fct = infer_minus,
-  check_fct = function(node, vars_types_list, info_env) {
-    if (inherits(node, "unary_node")) {
-      check_unary(node, vars_types_list, info_env)
-    } else if (inherits(node, "binary_node")) {
-      check_binary(node, vars_types_list, info_env)
-    }
-  },
+  check_fct = mock,
   group = "binary_node", cpp_name = "-"
 )
 function_registry_global$add(
   name = "*", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "*"
 )
 function_registry_global$add(
   name = "%*%", num_args = 2, arg_names = c(NA, NA),
   docu = "a %*% b  # matrix / vector product",
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "etr::mat_mul"
 )
 function_registry_global$add(
   name = "/", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "/"
 )
 function_registry_global$add(
   name = "%%", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "%"
 )
 function_registry_global$add(
   name = "%/%", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_binary_math,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "etr::idiv"
 )
 function_registry_global$add(
@@ -1172,61 +1356,61 @@ function_registry_global$add(
 function_registry_global$add(
   name = "==", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_comparison,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "=="
 )
 function_registry_global$add(
   name = "!=", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_comparison,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "!="
 )
 function_registry_global$add(
   name = ">", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_comparison,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = ">"
 )
 function_registry_global$add(
   name = ">=", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_comparison,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = ">="
 )
 function_registry_global$add(
   name = "<", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_comparison,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "<"
 )
 function_registry_global$add(
   name = "<=", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_comparison,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "<="
 )
 function_registry_global$add(
   name = "&&", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_and_or_scalar,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "&&"
 )
 function_registry_global$add(
   name = "||", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_and_or_scalar,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "||"
 )
 function_registry_global$add(
   name = "&", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_and_or_vector,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "&"
 )
 function_registry_global$add(
   name = "|", num_args = 2, arg_names = c(NA, NA),
   infer_fct = infer_and_or_vector,
-  check_fct = check_binary,
+  check_fct = mock,
   group = "binary_node", cpp_name = "|"
 )
 function_registry_global$add(
@@ -1242,21 +1426,38 @@ function_registry_global$add(
   check_fct = mock, group = "unary_node", cpp_name = "return"
 )
 function_registry_global$add(
-  name = "vector", num_args = 2, arg_names = c("mode", "length"),
+  name = "vector", num_args = c(1, 2), arg_names = c("mode", "length"),
   docu = paste0(
     "vector(mode, length)  # mode: \"logical\" / \"integer\" / \"numeric\".\n",
     "For a new_type collection pass the type name as mode: ",
-    "vector(\"MyType\", n) -> a length-n collection of MyType"
+    "vector(\"MyType\", n) -> a length-n collection of MyType.\n",
+    "For a layout (new_layout) pass its name: vector(\"State\") (length = number of names) ",
+    "or vector(\"State\", n)"
   ),
   infer_fct = function(node, vars_list, info_env, function_registry) {
     left_type <- infer(node$args[[1]], vars_list, info_env, function_registry)
-    right_type <- infer(node$args[[2]], vars_list, info_env, function_registry)
-    err <- check_operand_type(left_type, node, "left", allow_collection = TRUE)
-    if (!is.null(err)) return(err)
-    err <- check_operand_type(right_type, node, "right", allow_collection = TRUE)
+    err <- check_operand_type(left_type, node, "left", allow_collection = TRUE, allow_char = TRUE)
     if (!is.null(err)) return(err)
     mode_type <- node$args[[1]]$name |> remove_double_quotes()
     custom_type <- info_env$known_types[[mode_type]]
+    if (inherits(custom_type, "layout_def") && custom_type$kind != "vector") {
+      return(sprintf("vector(\"%s\"): %s is a %s layout, vector() only creates named vectors (new_layout)",
+                     mode_type, mode_type, custom_type$kind))
+    }
+    if (!inherits(custom_type, "layout_def") && length(node$args) == 1L) {
+      return("vector(mode, length) needs a length")
+    }
+    if (length(node$args) == 2L) {
+      right_type <- infer(node$args[[2]], vars_list, info_env, function_registry)
+      err <- check_operand_type(right_type, node, "right", allow_collection = TRUE)
+      if (!is.null(err)) return(err)
+    }
+    if (inherits(custom_type, "layout_def")) {
+      t <- make_inferred_type("vector", custom_type$base_type, info_env$r_fct, info_env$real_type)
+      t$data_struct$layout <- custom_type
+      node$internal_type <- t
+      return(t)
+    }
     if (!is.null(custom_type) && inherits(custom_type, "new_type_node")) {
       coll <- collection$new()
       coll$r_fct <- info_env$r_fct
@@ -1284,11 +1485,12 @@ function_registry_global$add(
     }
     s <- remove_double_quotes(node$args[[1]]$name)
     custom_type <- info_env$known_types[[s]]
-    is_custom_type <- !is.null(custom_type) && inherits(custom_type, "new_type_node")
+    is_custom_type <- inherits(custom_type, c("new_type_node", "layout_def"))
     if (!is_custom_type && !(s %in% c("logical", "integer", "numeric"))) {
       node$error <- sprintf("Found unallowed mode %s in vector", s)
     }
-    if (!is_int(node$args[[2]], vars_types_list) && !is_num(node$args[[2]], vars_types_list)) {
+    if (length(node$args) == 2L &&
+        !is_int(node$args[[2]], vars_types_list) && !is_num(node$args[[2]], vars_types_list)) {
       node$error <- "Found unallowed length type in vector"
     }
   },
@@ -1297,17 +1499,17 @@ function_registry_global$add(
 function_registry_global$add(
   name = "numeric", num_args = 1, arg_names = NA,
   infer_fct = infer_num_int_log,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::numeric"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::numeric"
 )
 function_registry_global$add(
   name = "integer", num_args = 1, arg_names = NA,
   infer_fct = infer_num_int_log,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::integer"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::integer"
 )
 function_registry_global$add(
   name = "logical", num_args = 1, arg_names = NA,
   infer_fct = infer_num_int_log,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::logical"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::logical"
 )
 function_registry_global$add(
   name = "matrix", num_args = 3, arg_names = c("data", "nrow", "ncol"),
@@ -1319,16 +1521,9 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (i in seq_along(all_types)) {
+      err <- check_operand_type(all_types[[i]], node, allow_NA_NaN_Inf = i == 1L)
+      if (!is.null(err)) return(err)
     }
     type_first_arg <- all_types[[1]]
     t <- make_inferred_type("matrix", type_first_arg$get_base_type(), info_env$r_fct, info_env$real_type)
@@ -1336,9 +1531,6 @@ function_registry_global$add(
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_char(node$args[[1]], vars_types_list)) {
-     node$error <- "You cannot fill a matrix with character entries"
-    }
     if (!is_int(node$args[[2]], vars_types_list) && !is_num(node$args[[2]], vars_types_list)) {
       node$error <- "Found unallowed nrow type in matrix"
     }
@@ -1355,48 +1547,32 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (i in seq_along(all_types)) {
+      err <- check_operand_type(all_types[[i]], node, allow_NA_NaN_Inf = i == 1L)
+      if (!is.null(err)) return(err)
     }
     type_first_arg <- all_types[[1]]
     t <- make_inferred_type("array", type_first_arg$get_base_type(), info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    if (is_char(node$args[[1]], vars_types_list)) {
-     node$error <- "You cannot fill an array with character entries"
-    }
-  },
+  check_fct = mock,
  group = "function_node", cpp_name = "etr::array"
 )
 function_registry_global$add(
   name = "length", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node, allow_collection = TRUE)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("scalar", "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    # is_collection() keys off the *root* variable's own declared type (see
-    # the note in check_subsetting), which is wrong once node$obj is itself a
-    # field access (e.g. length(s$circles) -- "s" is a struct, not a
-    # collection). Fall back to the already-inferred type directly.
     obj_internal_type <- node$obj$internal_type
     is_coll <- inherits(obj_internal_type, "pre_type_node") && obj_internal_type$get_data_struct() == "collection"
-    if (!is_vec_mat_or_array(node$obj, vars_types_list) && !is_coll) {
+    if (!is_vec_mat_or_array_internal_type(node$obj, vars_types_list) && !is_coll) {
       node$error <- "You can only call length on variables of type array, matrix, vector or collection"
     }
   },
@@ -1406,51 +1582,50 @@ function_registry_global$add(
   name = "dim", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("vector", "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (!is_mat(node$obj, vars_types_list) && !is_array(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list) && !is_array_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call dim on variables of type array or matrix"
     }
   },
  group = "unary_node", cpp_name = "etr::dim"
 )
+# TODO: nrow looks almost the same as dim. infer skalar vs vector
 function_registry_global$add(
   name = "nrow", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("scalar", "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (!is_mat(node$obj, vars_types_list) && !is_array(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list) && !is_array_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call nrow on variables of type array or matrix"
     }
   },
  group = "unary_node", cpp_name = "etr::nrow"
 )
+# TODO: ncol is the same as nrow
 function_registry_global$add(
   name = "ncol", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("scalar", "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (!is_mat(node$obj, vars_types_list) && !is_array(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list) && !is_array_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call ncol on variables of type array or matrix"
     }
   },
@@ -1496,16 +1671,9 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (tp in all_types) {
+      err <- check_operand_type(tp, node)
+      if (!is.null(err)) return(err)
     }
     t <- make_inferred_type("scalar", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
@@ -1523,7 +1691,8 @@ function_registry_global$add(
     }
     for (i in seq_len(length(types))) {
       if (!inherits(types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
+        node$error <- sprintf("Found unallowed type in: %s", node$stringify())
+        return()
       }
     }
     if (types[[1]]$get_base_type() != "double") {
@@ -1542,7 +1711,7 @@ function_registry_global$add(
       node$error <- "The third argument of cmr has to be a vector"
     }
   },
- group = "function_node", cpp_name = "etr::cmr", deriv_possible = FALSE
+ group = "function_node", cpp_name = "etr::cmr", deriv_possible = TRUE
 )
 
 function_registry_global$add(
@@ -1598,10 +1767,10 @@ function_registry_global$add(
     err <- check_operand_type(right_type_node, node, "right", allow_collection = TRUE)
     if (!is.null(err)) { node$error <- err; return() }
     if (!(left_type_node$get_base_type() %in% c("int", "integer", "double"))) {
-      node$error <- "The first argument of seed has to have the base type double"
+      node$error <- "The first argument of unseed has to have the base type double"
     }
     if (!(right_type_node$get_base_type() %in% c("int", "integer", "double"))) {
-      node$error <- "The second argument of seed has to have the base type integer or double"
+      node$error <- "The second argument of unseed has to have the base type integer or double"
     }
     if (inherits(node$left_node, c("binary_node", "function_node")) && node$left_node$operator %in% c("[", "[[", "at")) {
       node$error <- "The first argument of unseed cannot be a subsetting result -- pass the whole array and an index instead, e.g. unseed(x, 1L)"
@@ -1622,7 +1791,9 @@ function_registry_global$add(
 function_registry_global$add(
   name = "get_dot", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
-    infer(node$obj, vars_list, info_env, function_registry)
+    inner <- infer(node$obj, vars_list, info_env, function_registry)
+    err <- check_operand_type(inner, node, allow_collection = TRUE)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("vector", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
@@ -1632,8 +1803,7 @@ function_registry_global$add(
       node$error <- "get_dot can be only used when derivative is set to forward"
     }
     type <- node$obj$internal_type
-    err <- check_operand_type(type, node, allow_collection = TRUE)
-    if (!is.null(err)) { node$error <- err; return() }
+    if (!inherits(type, "pre_type_node")) return()
     if (type$get_base_type() != "double") {
       node$error <- "The argument of get_dot has to have the base type double"
     }
@@ -1671,10 +1841,7 @@ function_registry_global$add(
     }
     left_type_node <- node$left_node$internal_type
     right_type_node <- node$right_node$internal_type
-    err <- check_operand_type(left_type_node, node, "left", allow_collection = TRUE)
-    if (!is.null(err)) { node$error <- err; return() }
-    err <- check_operand_type(right_type_node, node, "right", allow_collection = TRUE)
-    if (!is.null(err)) { node$error <- err; return() }
+    if (!inherits(left_type_node, "pre_type_node") || !inherits(right_type_node, "pre_type_node")) return()
     if (left_type_node$get_base_type() != "double") {
       node$error <- "The first argument of deriv has to have the base type double"
     }
@@ -1688,15 +1855,15 @@ function_registry_global$add(
   name = "t", num_args = 1, arg_names = NA,
   docu = "t(x)  # x: matrix",
   infer_fct = function(node, vars_list, info_env, function_registry) {
-    infer(node$obj, vars_list, info_env, function_registry)
+    inner <- infer(node$obj, vars_list, info_env, function_registry)
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$obj, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries in t"
-    } else if (!is_mat(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call t on a matrix"
     }
   },
@@ -1707,17 +1874,14 @@ function_registry_global$add(
   docu = "chol(x)  # x: symmetric positive-definite matrix -> upper triangular factor",
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inner <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inner, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$obj, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries in chol"
-    } else if (!is_mat(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call chol on a matrix"
     }
   },
@@ -1728,17 +1892,14 @@ function_registry_global$add(
   docu = "crossprod(x)  # one argument only -> t(x) %*% x (use t(a) %*% b for the two-matrix form)",
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inner <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inner, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$obj, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries in crossprod"
-    } else if (!is_mat(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call crossprod on a matrix"
     }
   },
@@ -1749,17 +1910,14 @@ function_registry_global$add(
   docu = "tcrossprod(x)  # one argument only -> x %*% t(x)",
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inner <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inner, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$obj, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries in tcrossprod"
-    } else if (!is_mat(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call tcrossprod on a matrix"
     }
   },
@@ -1770,17 +1928,14 @@ function_registry_global$add(
   docu = "det(x)  # x: square matrix -> scalar determinant",
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inner <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inner, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("scalar", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$obj, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries in det"
-    } else if (!is_mat(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call det on a matrix"
     }
   },
@@ -1797,16 +1952,9 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (tp in all_types) {
+      err <- check_operand_type(tp, node)
+      if (!is.null(err)) return(err)
     }
     # 1-arg diag(x): x is a size (scalar) or the diagonal values (vector).
     # diag() never *reads* a diagonal -- that is get_diag().
@@ -1818,14 +1966,7 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (is_charNANaNInf(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character/NA/NaN/Inf entries in diag"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
  group = "function_node", cpp_name = "etr::diag"
 )
 function_registry_global$add(
@@ -1833,17 +1974,14 @@ function_registry_global$add(
   docu = "get_diag(x)  # x: matrix -> its diagonal as a vector",
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inner <- infer(node$obj, vars_list, info_env, function_registry)
-    if (!inherits(inner, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inner, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("vector", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
   check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$obj, vars_types_list)) {
-      node$error <- "You cannot use character/NA/NaN/Inf entries in get_diag"
-    } else if (!is_mat(node$obj, vars_types_list)) {
+    if (!is_mat_internal_type(node$obj, vars_types_list)) {
       node$error <- "You can only call get_diag on a matrix"
     }
   },
@@ -1852,37 +1990,37 @@ function_registry_global$add(
 function_registry_global$add(
   name = "max", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_keep_type,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::max"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::max"
 )
 function_registry_global$add(
   name = "min", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_keep_type,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::min"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::min"
 )
 function_registry_global$add(
   name = "which.max", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_fixed_type("integer"),
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::which_max"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::which_max"
 )
 function_registry_global$add(
   name = "which.min", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_fixed_type("integer"),
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::which_min"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::which_min"
 )
 function_registry_global$add(
   name = "which", num_args = 1, arg_names = NA,
   infer_fct = infer_which,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::which"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::which"
 )
 function_registry_global$add(
   name = "all", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_fixed_type("logical"),
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::all"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::all"
 )
 function_registry_global$add(
   name = "any", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_fixed_type("logical"),
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::any"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::any"
 )
 function_registry_global$add(
   name = "stop", num_args = 1, arg_names = NA,
@@ -1899,34 +2037,20 @@ function_registry_global$add(
   name = "rev", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     data_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (inherits(data_type, c("new_type_node", "fn_node"))) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (!inherits(data_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (data_type$get_data_struct() == "collection") {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(data_type, node)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type("vector", data_type$get_base_type(), info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::rev"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::rev"
 )
 function_registry_global$add(
   name = "as.numeric", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (inherits(inferred_type, c("new_type_node", "fn_node"))) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (inferred_type$get_data_struct() == "collection") {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node, allow_NA_NaN_Inf = TRUE)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type(inferred_type$get_data_struct(), "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
@@ -1937,15 +2061,8 @@ function_registry_global$add(
   name = "as.integer", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (inherits(inferred_type, c("new_type_node", "fn_node"))) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (inferred_type$get_data_struct() == "collection") {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node, allow_NA_NaN_Inf = TRUE)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type(inferred_type$get_data_struct(), "integer", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
@@ -1956,15 +2073,8 @@ function_registry_global$add(
   name = "as.logical", num_args = 1, arg_names = NA,
   infer_fct = function(node, vars_list, info_env, function_registry) {
     inferred_type <- infer(node$obj, vars_list, info_env, function_registry)
-    if (inherits(inferred_type, c("new_type_node", "fn_node"))) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (!inherits(inferred_type, "pre_type_node")) {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
-    if (inferred_type$get_data_struct() == "collection") {
-      return(sprintf("Found unallowed type in: %s", node$stringify()))
-    }
+    err <- check_operand_type(inferred_type, node, allow_NA_NaN_Inf = TRUE)
+    if (!is.null(err)) return(err)
     t <- make_inferred_type(inferred_type$get_data_struct(), "logical", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
@@ -1979,16 +2089,9 @@ function_registry_global$add(
       temp <- infer(x, vars_list, info_env, function_registry)
       return(temp)
     })
-    for (i in seq_len(length(types_of_args))) {
-      if (inherits(types_of_args[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
-      if (!inherits(types_of_args[[i]], "pre_type_node")) {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
-      if (types_of_args[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
+    for (tp in types_of_args) {
+      err <- check_operand_type(tp, node, allow_NA_NaN_Inf = TRUE)
+      if (!is.null(err)) return(err)
     }
     types_of_args <- sapply(types_of_args, \(x) x$get_base_type())
     common_type <- "logical"
@@ -2002,21 +2105,7 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (inherits(node$args[[i]], "variable_node")) {
-        t <- vars_types_list[[node$args[[i]]$name]]
-        if (!inherits(t, "pre_type_node")) {
-          node$error <- sprintf("You cannot use entries of type %s in rbind", class(t))
-          return()
-        }
-      }
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in rbind"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::rbind"
 )
 function_registry_global$add(
@@ -2027,16 +2116,9 @@ function_registry_global$add(
       temp <- infer(x, vars_list, info_env, function_registry)
       return(temp)
     })
-    for (i in seq_len(length(types_of_args))) {
-      if (inherits(types_of_args[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
-      if (!inherits(types_of_args[[i]], "pre_type_node")) {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
-      if (types_of_args[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
+    for (tp in types_of_args) {
+      err <- check_operand_type(tp, node, allow_NA_NaN_Inf = TRUE)
+      if (!is.null(err)) return(err)
     }
     types_of_args <- sapply(types_of_args, \(x) x$get_base_type())
     common_type <- "logical"
@@ -2050,67 +2132,53 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (inherits(node$args[[i]], "variable_node")) {
-        t <- vars_types_list[[node$args[[i]]$name]]
-        if (!inherits(t, "pre_type_node")) {
-          node$error <- sprintf("You cannot use entries of type %s in cbind", class(t))
-          return()
-        }
-      }
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in cbind"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::cbind"
 )
 function_registry_global$add(
   name = "floor", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::floor"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::floor"
 )
 function_registry_global$add(
   name = "ceiling", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::ceiling"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::ceiling"
 )
 function_registry_global$add(
   name = "trunc", num_args = 1, arg_names = NA,
   infer_fct = infer_unary_math,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::trunc"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::trunc"
 )
 function_registry_global$add(
   # round(x) only (no digits); R's ties-to-even rule; always double, derivative 0 a.e.
   name = "round", num_args = 1, arg_names = NA,
   docu = "round(x)  # one argument; the `digits` argument is not supported",
   infer_fct = infer_unary_math,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::round"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::round"
 )
 function_registry_global$add(
   name = "sum", num_args = 1, arg_names = NA,
   docu = "sum(x)  # one argument; `na.rm` is not supported",
   infer_fct = infer_sum,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::sum"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::sum"
 )
 function_registry_global$add(
   name = "prod", num_args = 1, arg_names = NA,
   infer_fct = infer_reduce_fixed_type("double"),
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::prod"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::prod"
 )
 function_registry_global$add(
   # always double, even for integer input (R semantics); NA propagates
   name = "mean", num_args = 1, arg_names = NA,
   docu = "mean(x)  # one argument; `na.rm` / `trim` are not supported",
   infer_fct = infer_reduce_fixed_type("double"),
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::mean"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::mean"
 )
 function_registry_global$add(
   name = "cumsum", num_args = 1, arg_names = NA,
   infer_fct = infer_cumsum,
-  check_fct = check_unary, group = "unary_node", cpp_name = "etr::cumsum"
+  check_fct = mock, group = "unary_node", cpp_name = "etr::cumsum"
 )
 function_registry_global$add(
   name = "colSums", num_args = 1, arg_names = NA,
@@ -2137,11 +2205,7 @@ function_registry_global$add(
   name = "sort", num_args = c(1, 2), arg_names = c(NA, NA),
   docu = "sort(x)  or  sort(x, decreasing)  # NAs are dropped; base type is kept",
   infer_fct = infer_sort,
-  check_fct = function(node, vars_types_list, info_env) {
-    if (is_charNANaNInf(node$args[[1]], vars_types_list)) {
-      node$args[[1]]$error <- "You cannot sort character/NA/NaN/Inf entries"
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::sort", deriv_possible = FALSE
 )
 function_registry_global$add(
@@ -2149,13 +2213,7 @@ function_registry_global$add(
   name = "ifelse", num_args = 3, arg_names = c(NA, NA, NA),
   docu = "ifelse(test, yes, no)  # yes/no must be a scalar or length(test)",
   infer_fct = infer_ifelse,
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (is_charNANaNInf(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character/NA/NaN/Inf entries in ifelse"
-      }
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::ifelse"
 )
 
@@ -2169,16 +2227,9 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (tp in all_types) {
+      err <- check_operand_type(tp, node)
+      if (!is.null(err)) return(err)
     }
     ds <- ""
     if (length(node$args) == 1L) {
@@ -2190,21 +2241,7 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (inherits(node$args[[i]], "variable_node")) {
-        t <- vars_types_list[[node$args[[i]]$name]]
-        if (!inherits(t, "pre_type_node")) {
-          node$error <- sprintf("You cannot use entries of type %s in solve", class(t))
-          return()
-        }
-      }
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in solve"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
  group = "function_node", cpp_name = "etr::solve"
 )
 function_registry_global$add(
@@ -2214,29 +2251,15 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (tp in all_types) {
+      err <- check_operand_type(tp, node)
+      if (!is.null(err)) return(err)
     }
     t <- make_inferred_type(all_types[[2L]]$get_data_struct(), "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in backsolve"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
  group = "function_node", cpp_name = "etr::backsolve"
 )
 function_registry_global$add(
@@ -2246,29 +2269,15 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (tp in all_types) {
+      err <- check_operand_type(tp, node)
+      if (!is.null(err)) return(err)
     }
     t <- make_inferred_type(all_types[[2L]]$get_data_struct(), "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in forwardsolve"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
  group = "function_node", cpp_name = "etr::forwardsolve"
 )
 function_registry_global$add(
@@ -2368,6 +2377,332 @@ function_registry_global$add(
  group = "function_node", cpp_name = "etr::uniroot", deriv_possible = FALSE,
  valid_fn_context = TRUE
 )
+# optional jac argument of cvode / ida. kinds per jac argument: scalar
+# (double), vec / mat (borrowed double), params (same type as the solver's)
+check_solver_jac <- function(node, solver, jac_pos, params_pos, kinds) {
+  jac <- node$args[[jac_pos]]
+  if (!inherits(jac, "fn_node")) jac <- jac$internal_type
+  if (!inherits(jac, "fn_node")) return()
+  args_to_jac <- jac$args_f
+  if (length(args_to_jac) != length(kinds)) {
+    node$error <- sprintf(
+      "the jac function passed to %s has to accept exactly %d arguments (%s)",
+      solver, length(kinds), paste(names(kinds), collapse = ", ")
+    )
+    return()
+  }
+  expected <- c(
+    scalar = "a scalar double",
+    vec = "borrow_vec(double) (it views the solver's memory)",
+    mat = "borrow_mat(double) (it views the solver's memory)"
+  )
+  for (i in seq_along(kinds)) {
+    ai <- args_to_jac[[i]]
+    kind <- kinds[[i]]
+    if (kind == "params") {
+      compare_types_passed_to_fn(node, ai, node$args[[params_pos]]$internal_type)
+      next
+    }
+    if (!inherits(ai, "pre_type_node")) next
+    ok <- ai$get_base_type() == "double" && switch(kind,
+      scalar = ai$get_data_struct() == "scalar",
+      vec = ai$get_data_struct_verbose() %in% c("borrow_vec", "borrow_vector"),
+      mat = ai$get_data_struct_verbose() %in% c("borrow_mat", "borrow_matrix")
+    )
+    if (!ok) {
+      node$error <- sprintf("%s: jac argument %s has to be %s", solver, names(kinds)[[i]], expected[[kind]])
+      return()
+    }
+  }
+  ret <- jac$return_type
+  if (inherits(ret, "pre_type_node") && ret$get_base_type() != "void") {
+    node$error <- sprintf("the jac function passed to %s must not return a value (it writes J in place)", solver)
+  }
+}
+# cvode_options() / ida_options(): constructors of the predefined option structs
+is_scalar_of <- function(t, base_types) {
+  inherits(t, "pre_type_node") && t$get_data_struct() == "scalar" &&
+    t$get_base_type() %in% base_types
+}
+linear_solvers <- c(sundials = 1L, lapack = 2L)
+infer_solver_options <- function(node, vars_list, info_env, function_registry, type_name, kinds) {
+  # infer runs more than once; a successful earlier pass already converted the string
+  converted <- is_options_type(node$internal_type, type_name)
+  i_solver <- match("solver", kinds)
+  if (!is.na(i_solver) && converted) kinds[[i_solver]] <- "int"
+  all_types <- lapply(node$args, function(arg) {
+    infer(arg, vars_list, info_env, function_registry)
+  })
+  numeric_types <- c("double", "integer", "int")
+  for (i in seq_along(kinds)) {
+    ok <- switch(kinds[[i]],
+      double = is_scalar_of(all_types[[i]], numeric_types),
+      int = is_scalar_of(all_types[[i]], numeric_types),
+      logical = is_scalar_of(all_types[[i]], c("logical", "bool", numeric_types)),
+      solver = TRUE
+    )
+    if (!ok) {
+      return(sprintf("%s: %s has to be a scalar %s", type_name, names(kinds)[[i]], kinds[[i]]))
+    }
+  }
+  # NOTE: converted last, so a failing pass leaves the string for the next one
+  if (!is.na(i_solver) && !converted) {
+    arg <- node$args[[i_solver]]
+    value <- if (inherits(arg, "literal_node") && arg$literal_type == "character") {
+      remove_double_quotes(arg$name)
+    } else ""
+    if (!(value %in% names(linear_solvers))) {
+      return(sprintf("%s: linear_solver has to be \"sundials\" or \"lapack\"", type_name))
+    }
+    arg$name <- paste0(linear_solvers[[value]], "L")
+    arg$literal_type <- "integer"
+  }
+  t <- info_env$known_types[[type_name]]
+  if (is.null(t)) return(sprintf("Did not find the predefined type %s", type_name))
+  node$internal_type <- t
+  t
+}
+is_options_type <- function(t, type_name) {
+  inherits(t, "new_type_node") && identical(t$name, type_name)
+}
+# NOTE: c(0.7) yields a temporary (RBufferTrait): only a const ref binds to it,
+# and that converting constructor fails at runtime ("Constructor not supported")
+check_solver_params_variable <- function(node, t, solver, pos) {
+  if (inherits(t, "pre_type_node") && t$get_data_struct() %in% c("vector", "matrix", "array") &&
+      !inherits(node$args[[pos]], "variable_node")) {
+    return(sprintf("%s: params (argument %d) has to be a variable, e.g. p <- c(0.7) and then pass p",
+                   solver, pos))
+  }
+  NULL
+}
+cvode_option_kinds <- c(reltol = "double", abstol = "double", stiff = "logical",
+                        max_steps = "int", stats = "logical", linear_solver = "solver")
+function_registry_global$add(
+  name = "cvode_options", num_args = 6, arg_names = names(cvode_option_kinds),
+  defaults = list(reltol = 1e-6, abstol = 1e-6, stiff = TRUE, max_steps = 1000000L, stats = FALSE,
+                  linear_solver = "sundials"),
+  docu = paste0(
+    "cvode_options(reltol = 1e-6, abstol = 1e-6, stiff = TRUE, max_steps = 1000000L, stats = FALSE, ",
+    "linear_solver = \"sundials\")\n",
+    "Options for cvode; every argument is optional. stiff: TRUE -> BDF with Newton iteration, ",
+    "FALSE -> ADAMS with fixed-point iteration (no Jacobian, jac is not used). ",
+    "max_steps: maximum number of steps per output interval. stats: print solver statistics. ",
+    "linear_solver (stiff = TRUE): \"sundials\" (dense LU of SUNDIALS) or \"lapack\" ",
+    "(faster for large systems; with OpenBLAS it does not run in parallel inside pmap)."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    infer_solver_options(node, vars_list, info_env, function_registry, "cvode_options", cvode_option_kinds)
+  },
+  check_fct = mock,
+  group = "function_node", cpp_name = "etr::cvode_options", deriv_possible = FALSE
+)
+ida_option_kinds <- c(reltol = "double", abstol = "double", max_steps = "int", stats = "logical",
+                      linear_solver = "solver")
+function_registry_global$add(
+  name = "ida_options", num_args = 5, arg_names = names(ida_option_kinds),
+  defaults = list(reltol = 1e-6, abstol = 1e-6, max_steps = 1000000L, stats = FALSE,
+                  linear_solver = "sundials"),
+  docu = paste0(
+    "ida_options(reltol = 1e-6, abstol = 1e-6, max_steps = 1000000L, stats = FALSE, ",
+    "linear_solver = \"sundials\")\n",
+    "Options for ida; every argument is optional. ",
+    "max_steps: maximum number of steps per output interval. stats: print solver statistics. ",
+    "linear_solver: \"sundials\" (dense LU of SUNDIALS) or \"lapack\" ",
+    "(faster for large systems; with OpenBLAS it does not run in parallel inside pmap)."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    infer_solver_options(node, vars_list, info_env, function_registry, "ida_options", ida_option_kinds)
+  },
+  check_fct = mock,
+  group = "function_node", cpp_name = "etr::ida_options", deriv_possible = FALSE
+)
+function_registry_global$add(
+  name = "cvode", num_args = c(5, 6), arg_names = c("rhs", "y0", "times", "params", "options", "jac"),
+  defaults = list(options = quote(cvode_options())),
+  docu = paste0(
+    "cvode(rhs, y0, times, params, options = cvode_options(), jac)\n",
+    "rhs: fn(t, y, ydot, params) writing ydot in place -- t a scalar double; ",
+    "y, ydot double vectors (borrowed, ref); no return value.\n",
+    "params is passed through unchanged and may be any type (double vector, ",
+    "scalar, new_type struct); the rhs's 4th argument must match it.\n",
+    "y0, times: double vectors (times[1] is t0). options: see cvode_options().\n",
+    "jac (optional): fn(t, y, J, params) writing J = d ydot / d y in place -- ",
+    "J a borrow_mat(double), zeroed before each call; no return value. ",
+    "Without jac the Jacobian comes from difference quotients.\n",
+    "Returns a length(times) x length(y0) matrix; row k is the state at times[k]."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    all_types <- lapply(node$args, function(arg) {
+      infer(arg, vars_list, info_env, function_registry)
+    })
+    if (!(length(all_types) %in% c(5L, 6L))) {
+      return("cvode expects 4 to 6 arguments")
+    }
+    if (length(all_types) == 6L && !inherits(all_types[[6L]], "fn_node")) {
+      return("cvode: jac (argument 6) has to be a function")
+    }
+    if (!inherits(all_types[[1L]], "fn_node")) {
+      return("The first argument to cvode has to be a function")
+    }
+    is_vec_double <- function(t) {
+      inherits(t, "pre_type_node") && t$get_data_struct() == "vector" &&
+        t$get_base_type() == "double"
+    }
+    if (!is_vec_double(all_types[[2L]])) {
+      return("cvode: y0 (argument 2) has to be a double vector")
+    }
+    if (!is_vec_double(all_types[[3L]])) {
+      return("cvode: times (argument 3) has to be a double vector")
+    }
+    # params (argument 4): opaque passthrough, any non-function value
+    if (inherits(all_types[[4L]], "fn_node")) {
+      return("cvode: params (argument 4) cannot be a function")
+    }
+    err <- check_solver_params_variable(node, all_types[[4L]], "cvode", 4L)
+    if (!is.null(err)) return(err)
+    if (!is_options_type(all_types[[5L]], "cvode_options")) {
+      return("cvode: options (argument 5) has to be created by cvode_options()")
+    }
+    make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
+  },
+  check_fct = function(node, vars_types_list, info_env) {
+    # inline fn: the arg is the fn_node; named fn: infer() cached it as internal_type
+    f <- node$args[[1L]]
+    if (!inherits(f, "fn_node")) f <- f$internal_type
+    if (!inherits(f, "fn_node")) return() # TODO: we have to write here into node$error
+    args_to_f <- f$args_f
+    if (length(args_to_f) != 4L) {
+      node$error <- "the function passed to cvode has to accept exactly 4 arguments (t, y, ydot, params)"
+      return()
+    }
+    t_arg <- args_to_f[[1L]]
+    if (inherits(t_arg, "pre_type_node") &&
+        !(t_arg$get_base_type() == "double" && t_arg$get_data_struct() == "scalar")) {
+      node$error <- "cvode: the first rhs argument (t) has to be a scalar double"
+      return()
+    }
+    for (i in 2:3) {
+      ai <- args_to_f[[i]]
+      if (inherits(ai, "pre_type_node")) {
+        # y and ydot view SUNDIALS memory: must be borrow_vec, not an owned vec
+        if (!(ai$get_data_struct_verbose() %in% c("borrow_vec", "borrow_vector"))) {
+          node$error <- "cvode: rhs arguments y and ydot have to be borrow_vec(double) (they view the solver's memory)"
+          return()
+        }
+        if (ai$get_base_type() != "double") {
+          node$error <- "cvode: rhs arguments y and ydot have to contain doubles"
+          return()
+        }
+      }
+    }
+    # rhs's 4th arg must match whatever was passed as cvode()'s params
+    compare_types_passed_to_fn(node, args_to_f[[4L]], node$args[[4L]]$internal_type)
+    ret_from_f <- f$return_type
+    if (inherits(ret_from_f, "pre_type_node") && ret_from_f$get_base_type() != "void") {
+      node$error <- "the function passed to cvode must not return a value (it writes ydot in place)"
+      return()
+    }
+    if (length(node$args) == 6L) {
+      check_solver_jac(node, "cvode", 6L, 4L,
+                       c(t = "scalar", y = "vec", J = "mat", params = "params"))
+    }
+  },
+ group = "function_node", cpp_name = "a2a::cvode_solve", deriv_possible = FALSE,
+ valid_fn_context = TRUE
+)
+function_registry_global$add(
+  name = "ida", num_args = c(7, 8),
+  arg_names = c("res", "y0", "yp0", "times", "params", "id", "options", "jac"),
+  defaults = list(options = quote(ida_options())),
+  docu = paste0(
+    "ida(res, y0, yp0, times, params, id, options = ida_options(), jac)\n",
+    "res: fn(t, y, yp, r, params) writing the residual r = F(t, y, yp) in place -- ",
+    "t a scalar double; y, yp, r double vectors (borrowed, ref); no return value.\n",
+    "params is passed through unchanged and may be any type; the res's 5th argument must match it.\n",
+    "y0, yp0, times, id: double vectors (times[1] is t0). id: 1 = differential, 0 = algebraic. ",
+    "yp0 and the algebraic part of y0 are corrected by IDACalcIC.\n",
+    "options: see ida_options().\n",
+    "jac (optional): fn(t, cj, y, yp, J, params) writing J = dF/dy + cj * dF/dyp in place -- ",
+    "t, cj scalar doubles; J a borrow_mat(double), zeroed before each call; no return value. ",
+    "Without jac the Jacobian comes from difference quotients.\n",
+    "Returns a length(times) x length(y0) matrix; row k is the state at times[k]."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    all_types <- lapply(node$args, function(arg) {
+      infer(arg, vars_list, info_env, function_registry)
+    })
+    if (!(length(all_types) %in% c(7L, 8L))) {
+      return("ida expects 6 to 8 arguments")
+    }
+    if (length(all_types) == 8L && !inherits(all_types[[8L]], "fn_node")) {
+      return("ida: jac (argument 8) has to be a function")
+    }
+    if (!inherits(all_types[[1L]], "fn_node")) {
+      return("The first argument to ida has to be a function")
+    }
+    is_vec_double <- function(t) {
+      inherits(t, "pre_type_node") && t$get_data_struct() == "vector" &&
+        t$get_base_type() == "double"
+    }
+    vector_args <- c(y0 = 2L, yp0 = 3L, times = 4L, id = 6L)
+    for (name in names(vector_args)) {
+      i <- vector_args[[name]]
+      if (!is_vec_double(all_types[[i]])) {
+        return(sprintf("ida: %s (argument %d) has to be a double vector", name, i))
+      }
+    }
+    if (inherits(all_types[[5L]], "fn_node")) {
+      return("ida: params (argument 5) cannot be a function")
+    }
+    err <- check_solver_params_variable(node, all_types[[5L]], "ida", 5L)
+    if (!is.null(err)) return(err)
+    if (!is_options_type(all_types[[7L]], "ida_options")) {
+      return("ida: options (argument 7) has to be created by ida_options()")
+    }
+    make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
+  },
+  check_fct = function(node, vars_types_list, info_env) {
+    f <- node$args[[1L]]
+    if (!inherits(f, "fn_node")) f <- f$internal_type
+    if (!inherits(f, "fn_node")) return()
+    args_to_f <- f$args_f
+    if (length(args_to_f) != 5L) {
+      node$error <- "the function passed to ida has to accept exactly 5 arguments (t, y, yp, r, params)"
+      return()
+    }
+    t_arg <- args_to_f[[1L]]
+    if (inherits(t_arg, "pre_type_node") &&
+        !(t_arg$get_base_type() == "double" && t_arg$get_data_struct() == "scalar")) {
+      node$error <- "ida: the first res argument (t) has to be a scalar double"
+      return()
+    }
+    for (i in 2:4) {
+      ai <- args_to_f[[i]]
+      if (inherits(ai, "pre_type_node")) {
+        if (!(ai$get_data_struct_verbose() %in% c("borrow_vec", "borrow_vector"))) {
+          node$error <- "ida: res arguments y, yp and r have to be borrow_vec(double) (they view the solver's memory)"
+          return()
+        }
+        if (ai$get_base_type() != "double") {
+          node$error <- "ida: res arguments y, yp and r have to contain doubles"
+          return()
+        }
+      }
+    }
+    compare_types_passed_to_fn(node, args_to_f[[5L]], node$args[[5L]]$internal_type)
+    ret_from_f <- f$return_type
+    if (inherits(ret_from_f, "pre_type_node") && ret_from_f$get_base_type() != "void") {
+      node$error <- "the function passed to ida must not return a value (it writes r in place)"
+      return()
+    }
+    if (length(node$args) == 8L) {
+      check_solver_jac(node, "ida", 8L, 5L,
+                       c(t = "scalar", cj = "scalar", y = "vec", yp = "vec", J = "mat", params = "params"))
+    }
+  },
+ group = "function_node", cpp_name = "a2a::ida_solve", deriv_possible = FALSE,
+ valid_fn_context = TRUE
+)
 function_registry_global$add(
   name = "nnls", num_args = 2, arg_names = c(NA, NA),
   docu = "nnls(a, b)  # both required; a: matrix, b: vector -> non-negative least-squares solution vector",
@@ -2378,112 +2713,196 @@ function_registry_global$add(
     if (length(all_types) != 2L) {
       return("nnls expects 2 arguments")
     }
-    for (i in seq_len(length(all_types))) {
-      if (inherits(all_types[[i]], c("new_type_node", "fn_node"))) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (!inherits(all_types[[i]], "pre_type_node")) {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
-      if (all_types[[i]]$get_data_struct() == "collection") {
-        return(sprintf("Found unallowed type in: %s", node$stringify()))
-      }
+    for (tp in all_types) {
+      err <- check_operand_type(tp, node)
+      if (!is.null(err)) return(err)
     }
     t <- make_inferred_type("vector", "double", info_env$r_fct, info_env$real_type)
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    for (i in seq_along(node$args)) {
-      if (is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in nnls"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
  group = "function_node", cpp_name = "etr::nnls", deriv_possible = FALSE
 )
+
+# jacobian, jacobian_sparse, jacobian_banded; the structured ones need a
+# sparsity pattern, so colouring is required and a missing pattern is an error
+infer_jacobian <- function(node, vars_list, info_env, function_registry, fname) {
+  structured <- fname != "jacobian"
+  opts <- jacobian_colouring_args(node, info_env$real_type, vars_list)
+  if (is.character(opts)) return(opts)
+  coloured <- vapply(node$args, inherits, logical(1), "cpp_code_node")
+  if (structured && opts$colouring == "none" && !any(coloured)) {
+    return(sprintf("%s needs colouring = \"static\", n = <integer literal> or colouring = \"runtime\"", fname))
+  }
+  pos_args <- node$args[!coloured]
+  all_types <- lapply(pos_args, function(arg) {
+    infer(arg, vars_list, info_env, function_registry)
+  })
+  if (!(length(all_types) %in% c(2L, 3L))) {
+    return(sprintf("%s expects 2 or 3 arguments", fname))
+  }
+  if (!inherits(all_types[[1L]], "fn_node")) {
+    return(sprintf("The first argument to %s has to be a function", fname))
+  }
+  x_type <- all_types[[2L]]
+  if (!inherits(x_type, "pre_type_node")) {
+    return(sprintf("Found unexpected type of argument 2 to %s", fname))
+  }
+  if (x_type$get_data_struct() != "vector") {
+    return(sprintf("The second argument to %s has to be a vector", fname))
+  }
+  if (x_type$get_base_type() != "double") {
+    return(sprintf("The second argument to %s has to be a vector containing doubles", fname))
+  }
+  has_extra <- length(pos_args) == 3L
+  if (has_extra) {
+    extra_type <- all_types[[3L]]
+    if (inherits(extra_type, "fn_node")) {
+      return(sprintf("The third argument to %s (data passed to the function) cannot itself be a function", fname))
+    }
+    if (inherits(extra_type, "pre_type_node") && extra_type$get_base_type() == "character") {
+      return(sprintf("The third argument to %s (data passed to the function) cannot be a character/string", fname))
+    }
+  }
+  # plain double translation: f alone runs with Dual (forward mode)
+  if (info_env$real_type == "etr::Double") {
+    fn <- runtime_colouring_fn(pos_args[[1L]], vars_list)
+    if (is.null(fn)) {
+      return(sprintf("%s: without translate(derivative = ...) f has to be a named fn, not an inline fn", fname))
+    }
+    no_ad <- function_registry$function_names[!function_registry$deriv_possibles]
+    err <- runtime_colouring_reverse_error(
+      fn, vars_list, sprintf("%s without translate(derivative = ...)", fname), c(ad_only_fcts, no_ad)
+    )
+    if (!is.null(err)) return(err)
+    pos_args[[1L]]$functor_scalar <- "etr::Dual"
+  }
+  f <- all_types[[1L]]
+  expected_n <- if (has_extra) 2L else 1L
+  if (length(f$args_f) != expected_n) {
+    return(sprintf(
+      "the function passed to %s has to accept exactly %d argument%s%s",
+      fname, expected_n, if (expected_n == 1L) "" else "s",
+      if (has_extra) " (the vector, then the extra data argument)" else ""
+    ))
+  }
+  a1 <- f$args_f[[1L]]
+  if (!inherits(a1, "pre_type_node") || a1$get_base_type() != "double" ||
+      a1$get_data_struct() != "vector") {
+    return(sprintf("the function passed to %s has to accept a double vector as its first argument", fname))
+  }
+  ret <- f$return_type
+  if (!inherits(ret, "pre_type_node") || ret$get_base_type() != "double" ||
+      ret$get_data_struct() != "vector") {
+    return(sprintf("the function passed to %s has to return a double vector", fname))
+  }
+  if (opts$colouring == "static" && !any(coloured)) {
+    col <- colouring_of_fn(f, opts$n, function_registry)
+    if (is.character(col) && structured) {
+      return(sprintf("%s: no static sparsity pattern for f (%s); use colouring = \"runtime\"", fname, col))
+    }
+    if (is.character(col)) {
+      warning(sprintf("jacobian: colouring not used (%s); one sweep per column instead", col),
+        call. = FALSE)
+    } else {
+      node$args[[length(node$args) + 1L]] <- cpp_code_node$new(
+        colouring_cpp(col, opts$n), sprintf("colouring = \"static\", n = %dL", opts$n)
+      )
+      split <- dense_row_split(col$rows, opts$n)
+      if (fname != "jacobian_banded" && split$k > 0L) {
+        warning(sprintf(
+          "%s: %d dense row%s; colouring = \"runtime\" needs %d sweeps instead of %d",
+          fname, split$k, if (split$k == 1L) "" else "s", split$sweeps, max(c(0L, col$color))
+        ), call. = FALSE)
+      }
+    }
+  }
+  if (opts$colouring == "runtime" && !any(coloured)) {
+    node$args[[length(node$args) + 1L]] <- cpp_code_node$new(
+      runtime_colouring_cpp(runtime_colouring_fn(pos_args[[1L]], vars_list)),
+      "colouring = \"runtime\""
+    )
+  }
+  if (structured) {
+    t <- info_env$known_types[[paste0(fname, "_result")]]
+    if (is.null(t)) {
+      return(sprintf("Did not find %s_result type which is required as return type for %s", fname, fname))
+    }
+  } else {
+    t <- make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
+  }
+  node$internal_type <- t
+  return(t)
+}
+
+check_jacobian <- function(node, vars_types_list, info_env) {
+  # inline fn: the arg is the fn_node itself; named fn: infer() cached it as internal_type
+  f <- node$args[[1L]]
+  if (!inherits(f, "fn_node")) f <- f$internal_type
+  if (!inherits(f, "fn_node")) return()
+  args_to_f <- f$args_f
+  arg1 <- node$args[[2L]]
+  # x is copied into the Dual / tape vector anyway
+  compare_types_passed_to_fn(node, args_to_f[[1L]], arg1$internal_type, allow_borrow_to_owned = TRUE)
+  if (length(args_to_f) == 2L) {
+    arg2 <- node$args[[3L]]
+    compare_types_passed_to_fn(node, args_to_f[[2L]], arg2$internal_type)
+  }
+}
+
 function_registry_global$add(
-  name = "jacobian", num_args = c(2, 3), arg_names = c(NA, NA, NA),
+  name = "jacobian", num_args = c(2, 3, 4, 5), arg_names = c(NA, NA, NA),
   docu = paste0(
-    "jacobian(f, x[, data])\n",
+    "jacobian(f, x[, data][, colouring = \"static\", n = <integer literal> | colouring = \"runtime\"])\n",
     "f: fn() taking a double vector (and optionally a second argument) and ",
     "returning a double vector; x: double vector.\n",
     "data is optional (any non-function, non-character value) and is passed to f ",
     "unchanged -- when given, f takes a second argument of that type.\n",
     "Returns the m-by-n Jacobian (m = length of f's result, n = length(x)).\n",
-    "Requires translate(derivative = \"forward\") or \"reverse\"."
+    "colouring = \"static\" (forward mode): sparsity pattern of f worked out at translation ",
+    "for length(x) == n, one sweep per colour instead of per column.\n",
+    "colouring = \"runtime\" (forward mode): pattern recorded at every call from one ",
+    "reverse-mode run of f; f has to be a named fn.\n",
+    "Without translate(derivative = ...) only f runs in forward mode (f has to be a named fn ",
+    "without borrow arguments); the rest of the translation stays plain double."
   ),
   infer_fct = function(node, vars_list, info_env, function_registry) {
-    if (info_env$real_type == "etr::Double") {
-      return("jacobian requires translate(derivative = \"forward\") or \"reverse\"")
-    }
-    all_types <- lapply(node$args, function(arg) {
-      infer(arg, vars_list, info_env, function_registry)
-    })
-    if (!(length(all_types) %in% c(2L, 3L))) {
-      return("jacobian expects 2 or 3 arguments")
-    }
-    if (!inherits(all_types[[1L]], "fn_node")) {
-      return("The first argument to jacobian has to be a function")
-    }
-    x_type <- all_types[[2L]]
-    if (!inherits(x_type, "pre_type_node")) {
-      return("Found unexpected type of argument 2 to jacobian")
-    }
-    if (x_type$get_data_struct() != "vector") {
-      return("The second argument to jacobian has to be a vector")
-    }
-    if (x_type$get_base_type() != "double") {
-      return("The second argument to jacobian has to be a vector containing doubles")
-    }
-    has_extra <- length(node$args) == 3L
-    if (has_extra) {
-      extra_type <- all_types[[3L]]
-      if (inherits(extra_type, "fn_node")) {
-        return("The third argument to jacobian (data passed to the function) cannot itself be a function")
-      }
-      if (inherits(extra_type, "pre_type_node") && extra_type$get_base_type() == "character") {
-        return("The third argument to jacobian (data passed to the function) cannot be a character/string")
-      }
-    }
-    f <- all_types[[1L]]
-    expected_n <- if (has_extra) 2L else 1L
-    if (length(f$args_f) != expected_n) {
-      return(sprintf(
-        "the function passed to jacobian has to accept exactly %d argument%s%s",
-        expected_n, if (expected_n == 1L) "" else "s",
-        if (has_extra) " (the vector, then the extra data argument)" else ""
-      ))
-    }
-    a1 <- f$args_f[[1L]]
-    if (!inherits(a1, "pre_type_node") || a1$get_base_type() != "double" ||
-        a1$get_data_struct() != "vector") {
-      return("the function passed to jacobian has to accept a double vector as its first argument")
-    }
-    ret <- f$return_type
-    if (!inherits(ret, "pre_type_node") || ret$get_base_type() != "double" ||
-        ret$get_data_struct() != "vector") {
-      return("the function passed to jacobian has to return a double vector")
-    }
-    t <- make_inferred_type("matrix", "double", info_env$r_fct, info_env$real_type)
-    node$internal_type <- t
-    return(t)
+    infer_jacobian(node, vars_list, info_env, function_registry, "jacobian")
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    # inline fn: the arg is the fn_node itself; named fn: infer() cached it as internal_type
-    f <- node$args[[1L]]
-    if (!inherits(f, "fn_node")) f <- f$internal_type
-    if (!inherits(f, "fn_node")) return()
-    args_to_f <- f$args_f
-    arg1 <- node$args[[2L]]
-    compare_types_passed_to_fn(node, args_to_f[[1L]], arg1$internal_type)
-    if (length(args_to_f) == 2L) {
-      arg2 <- node$args[[3L]]
-      compare_types_passed_to_fn(node, args_to_f[[2L]], arg2$internal_type)
-    }
-  },
+  check_fct = check_jacobian,
   group = "function_node", cpp_name = "etr::jacobian", valid_fn_context = TRUE
+)
+function_registry_global$add(
+  name = "jacobian_sparse", num_args = c(2, 3, 4, 5), arg_names = c(NA, NA, NA),
+  docu = paste0(
+    "jacobian_sparse(f, x[, data], colouring = \"static\", n = <integer literal> | colouring = \"runtime\")\n",
+    "Like jacobian, but only the entries of f's sparsity pattern are computed and stored ",
+    "(CSC, 0-based, as SUNDIALS' SUNMatrix_Sparse).\n",
+    "Returns a jacobian_sparse_result with $m, $n, $indexptrs, $indexvals, $data; ",
+    "returned to R as a Matrix::dgCMatrix."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    infer_jacobian(node, vars_list, info_env, function_registry, "jacobian_sparse")
+  },
+  check_fct = check_jacobian,
+  group = "function_node", cpp_name = "etr::jacobian_sparse", valid_fn_context = TRUE
+)
+function_registry_global$add(
+  name = "jacobian_banded", num_args = c(2, 3, 4, 5), arg_names = c(NA, NA, NA),
+  docu = paste0(
+    "jacobian_banded(f, x[, data], colouring = \"static\", n = <integer literal> | colouring = \"runtime\")\n",
+    "Like jacobian for a square jacobian, but stored as band matrix (as SUNDIALS' ",
+    "SUNMatrix_Band without LU scratch): mu/ml from f's sparsity pattern, ",
+    "A(i, j) at data[j * ldim + mu + i - j] (0-based), ldim = mu + ml + 1.\n",
+    "Returns a jacobian_banded_result with $n, $mu, $ml, $ldim, $data; ",
+    "returned to R as a Matrix::dgCMatrix."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    infer_jacobian(node, vars_list, info_env, function_registry, "jacobian_banded")
+  },
+  check_fct = check_jacobian,
+  group = "function_node", cpp_name = "etr::jacobian_banded", valid_fn_context = TRUE
 )
 function_registry_global$add(
   name = "lbfgsb", num_args = c(8, 9), arg_names = c(NA, NA, NA, NA, NA, NA, NA, NA, NA),
@@ -2594,19 +3013,21 @@ function_registry_global$add(
       compare_types_passed_to_fn(node, args_to_f[[2L]], node$args[[9L]]$internal_type)
     }
   },
- group = "function_node", cpp_name = "etr::lbfgsb", valid_fn_context = TRUE
+ group = "function_node", cpp_name = "etr::lbfgsb", valid_fn_context = TRUE,
+ thread_safe = FALSE
 )
 function_registry_global$add(
-  name = "pso", num_args = c(7, 8), arg_names = c(NA, NA, NA, NA, NA, NA, NA, NA),
+  name = "pso", num_args = c(8, 9), arg_names = c(NA, NA, NA, NA, NA, NA, NA, NA, NA),
   docu = paste0(
-    "pso(f, lower, upper, ngen, npop, error_threshold, global)\n",
-    "pso(f, lower, upper, ngen, npop, error_threshold, global, data)\n",
+    "pso(f, lower, upper, ngen, npop, error_threshold, global, seed)\n",
+    "pso(f, lower, upper, ngen, npop, error_threshold, global, seed, data)\n",
     "Particle-swarm optimisation (derivative-free). f: fn() taking a double ",
     "vector and returning a scalar double.\n",
     "lower/upper: scalar or length(npar) double (npar = length(lower)); ",
     "ngen/npop: scalar integer (>= 10 / >= 5); error_threshold: scalar double ",
     "(stop once the best error drops below it); global: scalar logical (use the ",
-    "global best instead of the neighbourhood best for the social pull).\n",
+    "global best instead of the neighbourhood best for the social pull); ",
+    "seed: scalar integer seeding pso's own Mersenne-Twister RNG.\n",
     "data is optional (any non-function, non-character value) and is passed to f ",
     "unchanged -- when given, f takes a second argument of that type.\n",
     "Returns the best parameter vector found."
@@ -2615,8 +3036,8 @@ function_registry_global$add(
     all_types <- lapply(node$args, function(arg) {
       infer(arg, vars_list, info_env, function_registry)
     })
-    if (!(length(all_types) %in% c(7L, 8L))) {
-      return("pso expects 7 or 8 arguments")
+    if (!(length(all_types) %in% c(8L, 9L))) {
+      return("pso expects 8 or 9 arguments")
     }
     if (!inherits(all_types[[1L]], "fn_node")) {
       return("The first argument to pso has to be a function")
@@ -2649,13 +3070,16 @@ function_registry_global$add(
     if (!scalar_num(all_types[[7L]], c("logical", "bool"))) {
       return("The seventh argument (global) to pso has to be a scalar logical")
     }
-    if (length(node$args) == 8L) {
-      extra_type <- all_types[[8L]]
+    if (!scalar_num(all_types[[8L]], c("double", "integer", "int"))) {
+      return("The eighth argument (seed) to pso has to be a scalar integer")
+    }
+    if (length(node$args) == 9L) {
+      extra_type <- all_types[[9L]]
       if (inherits(extra_type, "fn_node")) {
-        return("The eighth argument to pso (extra data passed to the function) cannot itself be a function")
+        return("The ninth argument to pso (extra data passed to the function) cannot itself be a function")
       }
       if (inherits(extra_type, "pre_type_node") && extra_type$get_base_type() == "character") {
-        return("The eighth argument to pso (extra data passed to the function) cannot be a character/string")
+        return("The ninth argument to pso (extra data passed to the function) cannot be a character/string")
       }
     }
     t <- make_inferred_type("vector", "double", info_env$r_fct, info_env$real_type)
@@ -2669,7 +3093,7 @@ function_registry_global$add(
     if (!inherits(f, "fn_node")) return()
     args_to_f <- f$args_f
     ret_from_f <- f$return_type
-    has_extra <- length(node$args) == 8L
+    has_extra <- length(node$args) == 9L
     expected_n_args <- if (has_extra) 2L else 1L
     if (length(args_to_f) != expected_n_args) {
       node$error <- sprintf(
@@ -2690,39 +3114,39 @@ function_registry_global$add(
       node$error <- "the function passed to pso has to return a scalar double"
     }
     if (has_extra && length(args_to_f) == 2L) {
-      compare_types_passed_to_fn(node, args_to_f[[2L]], node$args[[8L]]$internal_type)
+      compare_types_passed_to_fn(node, args_to_f[[2L]], node$args[[9L]]$internal_type)
     }
   },
  group = "function_node", cpp_name = "etr::pso", deriv_possible = FALSE,
  valid_fn_context = TRUE
 )
-function_registry_global$add(
-  name = "map", num_args = NA, arg_names = NA,
-  docu = paste0(
-    "map(f, x, ...)  # apply f element-wise over the given vectors; scalars broadcast.\n",
-    "Result shape follows f's return type: scalar -> vector, vector -> matrix,\n",
-    "matrix/array -> array (n as the last axis), new_type -> collection.\n",
-    "f may not return a collection -- wrap it in a new_type."
-  ),
-  infer_fct = function(node, vars_list, info_env, function_registry) {
-    types_of_args <- lapply(node$args, function(x) {
-      temp <- infer(x, vars_list, info_env, function_registry)
-      return(temp)
-    })
-    if (length(types_of_args) < 2) {
-      return("Too less arguments to function map. At least 2 are required.")
+# thread_safe = FALSE builtins reachable from fn, also through the fns it calls
+unsafe_calls <- function(fn, vars_list, function_registry, seen = character(0)) {
+  scope <- c(vars_list, fn$vars_types_list)
+  # during the outer type inference fn$AST is still raw R code; it becomes a
+  # node AST only when the inner function is transpiled
+  used <- if (is.language(fn$AST)) all.names(fn$AST) else collect_used_fcts(fn$AST, scope)
+  used <- unique(used)
+  bad <- Filter(function(u) !function_registry$thread_safe(u), used)
+  for (u in setdiff(used, seen)) {
+    if (inherits(scope[[u]], "fn_node")) {
+      bad <- c(bad, unsafe_calls(scope[[u]], vars_list, function_registry, c(seen, used)))
+    }
+  }
+  unique(bad)
+}
+
+# shared by map and pmap; the data args start at first_data
+infer_map_like <- function(node, types_of_args, info_env, name, first_data) {
+    if (length(types_of_args) < first_data) {
+      return(sprintf("Too less arguments to function %s. At least %d are required.", name, first_data))
     }
     if (!inherits(types_of_args[[1L]], "fn_node")) {
-      return("The first argument to map has to be a function")
+      return(sprintf("The first argument to %s has to be a function", name))
     }
-    for (i in 2:length(types_of_args)) {
-      toa <- types_of_args[[i]]
-      if (inherits(toa, c("unknown_type", "fn_node"))) {
-        return(sprintf("Found unexpected type in: %s", node$stringify()))
-      }
-      if (inherits(toa, "pre_type_node") && toa$get_base_type() == "character") {
-        return("You cannot use character entries in map")
-      }
+    for (toa in types_of_args[-1L]) {
+      err <- check_operand_type(toa, node, allow_collection = TRUE)
+      if (!is.null(err)) return(err)
     }
     t <- types_of_args[[1L]]$return_type
     if (inherits(t, "pre_type_node")) {
@@ -2739,7 +3163,7 @@ function_registry_global$add(
       #                                        using this mechanism.
 
       if (t$get_data_struct() == "collection") {
-        return("map does not support functions which return collections")
+        return(sprintf("%s does not support functions which return collections", name))
       }
       data_struct <- t$get_data_struct()
       if (data_struct == "scalar") {
@@ -2766,42 +3190,73 @@ function_registry_global$add(
     }
     # f takes one parameter per data arg: a scalar of that arg's base type, or
     # the element type when the data arg is a collection
-    expect <- lapply(types_of_args[-1L], function(ta) {
+    expect <- lapply(types_of_args[first_data:length(types_of_args)], function(ta) {
       if (inherits(ta, "pre_type_node") && ta$get_data_struct() == "collection") {
         ta$data_struct$element_type
       } else {
         list(data_struct = "scalar", base_type = ta$get_base_type())
       }
     })
-    err <- check_functional_fn(types_of_args[[1L]], expect, "map")
+    err <- check_functional_fn(types_of_args[[1L]], expect, name)
     if (!is.null(err)) return(err)
+    fn <- types_of_args[[1L]]
+    for (i in seq_along(fn$args_f)) {
+      a <- fn$args_f[[i]]
+      if (a$get_copy_or_ref() == "ref" && a$get_const_or_mut() != "const") {
+        return(sprintf("%s: argument %d of %s is ref() and has to be const() as well", name, i, fn$fct_name))
+      }
+    }
     node$internal_type <- t
     return(t)
+}
+
+function_registry_global$add(
+  name = "map", num_args = NA, arg_names = NA,
+  docu = paste0(
+    "map(f, x, ...)  # apply f element-wise over the given vectors; scalars broadcast.\n",
+    "Result shape follows f's return type: scalar -> vector, vector -> matrix,\n",
+    "matrix/array -> array (n as the last axis), new_type -> collection.\n",
+    "f may not return a collection -- wrap it in a new_type."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    types_of_args <- lapply(node$args, function(x) {
+      infer(x, vars_list, info_env, function_registry)
+    })
+    infer_map_like(node, types_of_args, info_env, "map", 2L)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    if (length(node$args) < 2) {
-      node$error <- "Too less arguments to function map. At least 2 are required."
-    }
-    for (i in seq_along(node$args)) {
-      if (inherits(node$args[[i]], "variable_node")) {
-        t <- vars_types_list[[node$args[[i]]$name]]
-        if (i == 1 && !inherits(t, "fn_node")) {
-          node$error <- sprintf("The first argument to map has to be a function (fn) instead got %s", class(t))
-          return()
-        }
-        if (i > 1 && !inherits(t, "pre_type_node")) {
-          node$error <- sprintf("You cannot use entries of type %s in map", class(t))
-          return()
-        }
-      }
-      # skip i == 1: the function slot is an fn_node whose internal_type is NULL
-      if (i >= 2 && is_char(node$args[[i]], vars_types_list)) {
-        node$error <- "You cannot use character entries in map"
-        return()
-      }
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::map", valid_fn_context = TRUE
+)
+function_registry_global$add(
+  name = "pmap", num_args = NA, arg_names = NA,
+  docu = paste0(
+    "pmap(f, ncores, x, ...)  # like map, but the elements are processed in parallel.\n",
+    "ncores: scalar int or double, clamped to [1, number of cores].\n",
+    "Worker i is pinned to logical CPU i; with hyperthreading two workers can share\n",
+    "one physical core, so memory-heavy f may scale with about half of ncores.\n",
+    "f may not call functions that use the R API (e.g. lbfgsb)."
+  ),
+  infer_fct = function(node, vars_list, info_env, function_registry) {
+    types_of_args <- lapply(node$args, function(x) {
+      infer(x, vars_list, info_env, function_registry)
+    })
+    t <- infer_map_like(node, types_of_args, info_env, "pmap", 3L)
+    if (is.character(t)) return(t)
+    nc <- types_of_args[[2L]]
+    if (!inherits(nc, "pre_type_node") || nc$get_data_struct() != "scalar" ||
+        !nc$get_base_type() %in% c("int", "integer", "double")) {
+      return("pmap: ncores (argument 2) has to be a scalar int or double")
+    }
+    bad <- unsafe_calls(types_of_args[[1L]], vars_list, function_registry)
+    if (length(bad) > 0L) {
+      return(sprintf("pmap: the mapped function calls %s, which cannot run in parallel",
+        paste0("'", bad, "'", collapse = ", ")))
+    }
+    t
+  },
+  check_fct = mock,
+  group = "function_node", cpp_name = "etr::pmap", deriv_possible = FALSE,
+  valid_fn_context = TRUE
 )
 function_registry_global$add(
   name = "Reduce", num_args = 2, arg_names = c(NA, NA),
@@ -2817,14 +3272,8 @@ function_registry_global$add(
       return("The first argument to Reduce has to be a function")
     }
     seq_type <- types_of_args[[2L]]
-    if (is.character(seq_type)) return(seq_type)
-    if (inherits(seq_type, c("new_type_node", "fn_node")) ||
-      !inherits(seq_type, "pre_type_node")) {
-      return(sprintf("Found unexpected sequence type in: %s", node$stringify()))
-    }
-    if (seq_type$get_data_struct() != "collection" && seq_type$get_base_type() == "character") {
-      return("You cannot use character entries in Reduce")
-    }
+    err <- check_operand_type(seq_type, node, "x", allow_collection = TRUE)
+    if (!is.null(err)) return(err)
     # f(acc, elem): elem matches the sequence element; the accumulator's base
     # type is left open (folding ints into a double accumulator is fine)
     if (seq_type$get_data_struct() == "collection") {
@@ -2857,22 +3306,7 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    if (length(node$args) != 2) {
-      node$error <- "Reduce expects exactly two arguments: Reduce(f, x)."
-      return()
-    }
-    if (inherits(node$args[[1]], "variable_node")) {
-      t <- vars_types_list[[node$args[[1]]$name]]
-      if (!inherits(t, "fn_node")) {
-        node$error <- sprintf("The first argument to Reduce has to be a function (fn) instead got %s", class(t))
-        return()
-      }
-    }
-    if (is_char(node$args[[2]], vars_types_list)) {
-      node$error <- "You cannot use character entries in Reduce"
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::reduce", valid_fn_context = TRUE
 )
 function_registry_global$add(
@@ -2889,8 +3323,9 @@ function_registry_global$add(
       return("The first argument to Filter has to be a function")
     }
     x_type <- types_of_args[[2L]]
-    if (is.character(x_type)) return(x_type)
-    if (!inherits(x_type, "pre_type_node") || x_type$get_data_struct() != "vector") {
+    err <- check_operand_type(x_type, node, "x", allow_collection = TRUE)
+    if (!is.null(err)) return(err)
+    if (x_type$get_data_struct() != "vector") {
       return(sprintf("Filter only supports vectors (collections are not supported yet) in: %s", node$stringify()))
     }
     err <- check_functional_fn(
@@ -2909,22 +3344,7 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    if (length(node$args) != 2) {
-      node$error <- "Filter expects exactly two arguments: Filter(f, x)."
-      return()
-    }
-    if (inherits(node$args[[1]], "variable_node")) {
-      t <- vars_types_list[[node$args[[1]]$name]]
-      if (!inherits(t, "fn_node")) {
-        node$error <- sprintf("The first argument to Filter has to be a function (fn) instead got %s", class(t))
-        return()
-      }
-    }
-    if (is_char(node$args[[2]], vars_types_list)) {
-      node$error <- "You cannot use character entries in Filter"
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::filter", valid_fn_context = TRUE
 )
 function_registry_global$add(
@@ -2953,8 +3373,9 @@ function_registry_global$add(
       return(sprintf("The second argument (MARGIN) to apply has to be an integer or double in: %s", node$stringify()))
     }
     x_type <- types_of_args[[3L]]
-    if (is.character(x_type)) return(x_type)
-    if (!inherits(x_type, "pre_type_node") || x_type$get_data_struct() != "matrix") {
+    err <- check_operand_type(x_type, node, "x", allow_collection = TRUE)
+    if (!is.null(err)) return(err)
+    if (x_type$get_data_struct() != "matrix") {
       return(sprintf("The third argument to apply has to be a matrix in: %s", node$stringify()))
     }
     rt <- types_of_args[[1L]]$return_type
@@ -2978,21 +3399,6 @@ function_registry_global$add(
     node$internal_type <- t
     return(t)
   },
-  check_fct = function(node, vars_types_list, info_env) {
-    if (length(node$args) != 3) {
-      node$error <- "apply expects exactly three arguments: apply(f, MARGIN, x)."
-      return()
-    }
-    if (inherits(node$args[[1]], "variable_node")) {
-      t <- vars_types_list[[node$args[[1]]$name]]
-      if (!inherits(t, "fn_node")) {
-        node$error <- sprintf("The first argument to apply has to be a function (fn) instead got %s", class(t))
-        return()
-      }
-    }
-    if (is_char(node$args[[2]], vars_types_list) || is_char(node$args[[3]], vars_types_list)) {
-      node$error <- "You cannot use character entries in apply"
-    }
-  },
+  check_fct = mock,
   group = "function_node", cpp_name = "etr::apply", valid_fn_context = TRUE
 )

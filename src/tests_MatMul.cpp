@@ -21,8 +21,8 @@ void test_mat_mul() {
   const std::vector<double>      Avals{1.0, 4.0, 2.0, 5.0, 3.0, 6.0};
   const std::vector<double>      Bvals{7.0, 9.0, 11.0, 8.0, 10.0, 12.0};
   const std::vector<double>      expC {58.0, 139.0, 64.0, 154.0};
-  const std::vector<std::size_t> dimA{2, 3};
-  const std::vector<std::size_t> dimB{3, 2};
+  const Dim dimA{2, 3};
+  const Dim dimB{3, 2};
 
   // ---- 1. plain Double x Double, both LBuffer --------------------------------
   {
@@ -154,14 +154,12 @@ void test_mat_mul() {
   {
     Array<Dual, Buffer<Dual, LBufferTrait>> A(SI{6});
     for (std::size_t k = 0; k < 6; ++k) {
-      Dual d; d.val = Avals[k]; d.dot = 2.0; d.is_na = false; d.is_na_dot = false;
-      A.set(k, d);
+      A.set(k, Dual(Avals[k], 2.0));
     }
     A.dim = dimA;
     Array<Dual, Buffer<Dual, LBufferTrait>> B(SI{6});
     for (std::size_t k = 0; k < 6; ++k) {
-      Dual d; d.val = Bvals[k]; d.dot = 3.0; d.is_na = false; d.is_na_dot = false;
-      B.set(k, d);
+      B.set(k, Dual(Bvals[k], 3.0));
     }
     B.dim = dimB;
 
@@ -179,8 +177,7 @@ void test_mat_mul() {
   {
     Array<Dual, Buffer<Dual, LBufferTrait>> A(SI{6});
     for (std::size_t k = 0; k < 6; ++k) {
-      Dual d; d.val = Avals[k]; d.dot = 2.0; d.is_na = false; d.is_na_dot = false;
-      A.set(k, d);
+      A.set(k, Dual(Avals[k], 2.0));
     }
     A.dim = dimA;
     Array<Double, Buffer<Double, LBufferTrait>> B(SI{6});

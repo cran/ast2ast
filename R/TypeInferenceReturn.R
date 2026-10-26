@@ -111,10 +111,12 @@ reconcile_return_types <- function(value_types, r_fct) {
   # has no concrete C++ type for the XPtr interface. A lone string return is
   # left for translate_internally to reject; a string mixed with other returns
   # is caught here (common_type cannot combine it).
+  # a range is internal, never a function's return type
+  value_types <- lapply(value_types, strip_range)
   Reduce(function(acc, t) {
     if (inherits(acc, "pre_type_node") && inherits(t, "pre_type_node")) {
       if (identical(acc$get_base_type(), "character") || identical(t$get_base_type(), "character")) {
-        stop("An XPtr function cannot return a string")
+        stop("An XPtr function cannot return a string", call. = FALSE)
       }
       return(common_type(acc, t) |> flatten_type())
     }
@@ -124,8 +126,41 @@ reconcile_return_types <- function(value_types, r_fct) {
     if (same_custom) {
       return(acc)
     }
-    stop("An XPtr function must return the same type on every path")
+    stop("An XPtr function must return the same type on every path", call. = FALSE)
   }, value_types)
+}
+
+# A declared returntype() is an exact contract, checked against every actual
+# return directly -- unlike reconcile_return_types() above, which only exists
+# because an undeclared r_fct return needs no concrete type (always SEXP) and
+# so is free to stay ambiguous across branches.
+validate_declared_return_type <- function(declared, value_types, found_void_return, found_non_void_return, fct_name = NULL) {
+  label <- if (is.null(fct_name)) "the function" else sprintf("function %s", fct_name)
+  is_void <- inherits(declared, "pre_type_node") && identical(declared$get_base_type(), "void")
+  if (is_void) {
+    if (found_non_void_return) {
+      stop(sprintf("%s is declared with returntype(void) but returns a value on at least one path", label), call. = FALSE)
+    }
+    return(declared)
+  }
+  if (found_void_return) {
+    stop(sprintf("%s has a declared return type but returns nothing (NULL/void) on at least one path", label), call. = FALSE)
+  }
+  for (t in value_types) {
+    if (!same_base_type(t$get_base_type(), declared$get_base_type())) {
+      stop(sprintf(
+        "Specified return type does not match the detected return type for %s. Desired base type is %s but found %s",
+        label, declared$get_base_type(), t$get_base_type()
+      ), call. = FALSE)
+    }
+    if (!same_data_struct(t$get_data_struct(), declared$get_data_struct())) {
+      stop(sprintf(
+        "Specified return type does not match the detected return type for %s. Desired data structure is %s but found %s",
+        label, declared$get_data_struct(), t$get_data_struct()
+      ), call. = FALSE)
+    }
+  }
+  declared
 }
 
 create_return_statement <- function(node, function_registry) {
@@ -135,7 +170,11 @@ create_return_statement <- function(node, function_registry) {
       node$block[[1]] <- create_void_return()
       return(node)
     }
+    location <- node$block[[n]]$location
     repl <- create_return_statement(node$block[[n]], function_registry)
+    for (r in if (inherits(repl, "list")) repl else list(repl)) {
+      if ("location" %in% names(r) && is.null(r$location)) r$location <- location
+    }
     if (inherits(repl, "list")) {
       # void tail call: keep the call for its side effects, then return()
       node$block[[n]] <- repl[[1]]

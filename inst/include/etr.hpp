@@ -22,10 +22,16 @@ If not see: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html#SEC4
 #ifndef ETR_HPP
 #define ETR_HPP
 
+// NA is a NaN payload (R's NA_real_); -ffinite-math-only folds isnan() away
+#if defined(__FAST_MATH__) || defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+#error "ast2ast does not work with -ffast-math / -ffinite-math-only (NA is stored as NaN, like in R)"
+#endif
+
 #include "etr_bits/Core.hpp"
 #include "etr_bits/Collection.hpp"
-#include "etr_bits/Allocation.hpp"
+// Calculations first: seq_len()/colon() build a BinaryOperation (lazy range)
 #include "etr_bits/Calculations.hpp"
+#include "etr_bits/Allocation.hpp"
 #include "etr_bits/Interpolation.hpp"
 #include "etr_bits/Subsetting.hpp"
 #include "etr_bits/Utilities.hpp"

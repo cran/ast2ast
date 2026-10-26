@@ -14,8 +14,9 @@ translate(
 }
 \arguments{
   \item{f}{An R function to be translated into C++. Argument types are declared
-    with an \code{argtypes(...)} block as the first statement of its body; see the
-    Details section.}
+    with an \code{argtypes(...)} block as the first statement of its body, and
+    the return type optionally with \code{returntype(...)} right after it; see
+    the Details section.}
   \item{types_f}{A helper function that declares custom struct types via
     \code{new_type()}, for use as argument types, variable types, or slot
     types inside \code{f}. Optional; defaults to \code{NULL}. See the
@@ -42,7 +43,7 @@ translate(
   Depending on \code{output}:
   \itemize{
     \item \emph{R}: an R function that directly calls the compiled C++ code.
-    \item \emph{XPtr}: a function that returns an external pointer to the compiled C++ code.
+    \item \emph{XPtr}: an external pointer (class \code{"XPtr"}) to the compiled C++ function.
   }
 }
 \description{
@@ -73,7 +74,8 @@ translate(
         \code{get_diag}, \code{solve}, \code{backsolve}, \code{forwardsolve}, \code{rbind}, \code{cbind}
       \item Root finding / least squares: \code{uniroot}, \code{nnls}
       \item Functionals (take an \code{fn()}): \code{map}, \code{Reduce}, \code{Filter}, \code{apply}
-      \item Optimizers / derivatives of an \code{fn()}: \code{jacobian}, \code{lbfgsb}, \code{pso}
+      \item Optimizers / derivatives of an \code{fn()}: \code{jacobian}, \code{jacobian_sparse},
+        \code{jacobian_banded}, \code{lbfgsb}, \code{pso}
       \item Casts: \code{as.numeric}, \code{as.integer}, \code{as.logical}
       \item Sequences: \code{seq_len}, \code{seq_along}
       \item Concatenation: \code{c}
@@ -92,6 +94,8 @@ translate(
       \item Derivative functions in reverse mode: \code{deriv}
       \item Inner functions: \code{fn()}, see below
       \item Custom types: \code{new_type()}, see below
+      \item Layouts (names): \code{new_layout()}, \code{new_mat_layout()}, \code{new_array_layout()},
+        \code{new_collection_layout()}, see below
     }
     Types are static in C++ and cannot be changed within the function. Each type consists of a base data type and a data structure:
     \itemize{
@@ -123,10 +127,29 @@ translate(
     }
     Supported extensions for arguments:
     \itemize{
-      \item \code{borrow_vec}, \code{borrow_mat}: pass inputs by reference, modifying them in place.
+      \item \code{borrow_vec}, \code{borrow_mat}, \code{borrow_array}: pass inputs by reference,
+        modifying them in place. Passed to an inner function expecting \code{vec}/\code{mat}/\code{array}
+        they are copied (with a warning); a mutable \code{ref()} parameter requires the borrowed type.
       \item \code{const()}: disallow modification of inputs.
-      \item \code{ref()}: pass by reference (only valid when \code{output = "XPtr"}).
+      \item \code{ref()}: pass by reference; changes persist after the call. Works for inner
+        functions, and for the arguments of \code{f} only with \code{output = "XPtr"}.
     }
+  }
+  \subsection{Return type}{
+    The return type is normally inferred from \code{f}'s body. To declare it
+    explicitly, add \code{returntype(...)} directly after \code{argtypes(...)}
+    (or as the first statement if there is no \code{argtypes(...)}):
+    \preformatted{
+      f <- function(x) {
+        argtypes(x |> type(vec(double)))
+        returntype(double)
+        return(sum(x))
+      }
+    }
+    When given, every \code{return} in \code{f} is checked against the
+    declared type instead of being inferred, for both \code{output = "R"} and
+    \code{output = "XPtr"}. Use \code{returntype(void)} for a function with no
+    return value.
   }
   \subsection{Inner functions}{
     Functions can be defined inside \code{f} with \code{fn()}, which takes three
@@ -161,6 +184,11 @@ translate(
         vectors (scalars broadcast). The result shape follows \code{f}'s return
         type: scalar gives a vector, vector a matrix, matrix/array an array,
         \code{new_type} a \code{collection}.
+      \item \code{pmap(f, ncores, x, ...)}: like \code{map}, but the elements
+        are processed in parallel. \code{ncores} is a scalar int or double,
+        clamped to the number of available cores. \code{f} may not call
+        functions that use the R API internally (currently \code{lbfgsb}).
+        Not available with \code{derivative = "forward"}/\code{"reverse"}.
       \item \code{Reduce(f, x)}: left fold seeded with \code{x[[1]]};
         \code{f} is \code{fn(acc, elem) -> acc}.
       \item \code{Filter(f, x)}: keep the elements of vector \code{x} for which
@@ -172,18 +200,41 @@ translate(
   }
   \subsection{Optimizers and Jacobians}{
     \itemize{
-      \item \code{jacobian(f, x[, data])}: the \code{m}-by-\code{n} Jacobian at
+      \item \code{jacobian(f, x[, data][, colouring])}: the \code{m}-by-\code{n} Jacobian at
         \code{x} of \code{f}, which maps a double vector to a double vector.
         Requires \code{derivative = "forward"} or \code{"reverse"}.
+        The optional \code{colouring} (forward mode only) computes columns that share
+        no row in one sweep:
+        \itemize{
+          \item \code{colouring = "static", n = <integer literal>}: the sparsity pattern
+            of \code{f} is derived at translation time for \code{length(x) == n}.
+          \item \code{colouring = "runtime"}: the pattern is recorded at every call
+            from one reverse-mode run of \code{f}; \code{f} has to be a named function.
+        }
+      \item \code{jacobian_sparse(f, x[, data], colouring = ...)}: like \code{jacobian},
+        but only the entries of the sparsity pattern are computed and stored
+        (CSC, 0-based, as SUNDIALS' \code{SUNMatrix_Sparse}). Fields:
+        \code{$m}, \code{$n}, \code{$indexptrs}, \code{$indexvals}, \code{$data}.
+      \item \code{jacobian_banded(f, x[, data], colouring = ...)}: square Jacobian
+        stored as LAPACK band matrix (as SUNDIALS' \code{SUNMatrix_Band}):
+        \code{A(i, j)} at \code{data[j * ldim + mu + i - j]} (0-based),
+        \code{ldim = mu + ml + 1}. Fields: \code{$n}, \code{$mu}, \code{$ml},
+        \code{$ldim}, \code{$data}.
+    }
+    \code{jacobian_sparse} and \code{jacobian_banded} need the sparsity pattern, so
+    \code{colouring} is required and only forward mode is supported. Both are returned
+    to R as a \code{Matrix::dgCMatrix} (package \pkg{Matrix} has to be installed).
+    \itemize{
       \item \code{lbfgsb(f, x, lower, upper, maxit, factr, pgtol, lmm[, data])}:
         bound-constrained L-BFGS-B via R's own C routine. \code{f} maps a double
         vector to a scalar double. Under \code{derivative = "forward"}/\code{"reverse"}
         the gradient is exact (via \code{jacobian}); otherwise it is a
         central-difference approximation. Returns a struct with \code{$par},
         \code{$value}, \code{$convergence}, \code{$counts}.
-      \item \code{pso(f, lower, upper, ngen, npop, error_threshold, global[, data])}:
+      \item \code{pso(f, lower, upper, ngen, npop, error_threshold, global, seed[, data])}:
         derivative-free particle-swarm optimisation. \code{f} maps a double
-        vector to a scalar double; returns the best parameter vector found.
+        vector to a scalar double; \code{seed} seeds pso's own Mersenne-Twister
+        RNG; returns the best parameter vector found.
     }
     For \code{lbfgsb} and \code{pso} the optional trailing \code{data} argument
     (any non-function, non-character value) is passed to \code{f} unchanged as a
@@ -204,6 +255,29 @@ translate(
     as \code{s$circles[[1L]]$center$x}. A slot may itself be a custom type
     (nested structs) or \code{collection(TypeName)}, a vector of a custom
     type; allocate one locally with \code{vector(mode = "TypeName", n)}.
+  }
+  \subsection{Named vectors and layouts}{
+    Layouts attach names to vectors, matrices, arrays and collections. They are
+    declared in \code{types_f}; each names argument is an R expression,
+    \code{NULL} (no names) or an existing \code{new_layout()}:
+    \preformatted{
+      types_f <- function() {
+        new_layout(State, double, names = c("prey", "pred"))
+        new_mat_layout(Result, double, rownames = c("t0", "t1"), colnames = State)
+        new_array_layout(Cube, double, dimnames = list(c("a", "b"), NULL, c("t1", "t2")))
+        new_type(Point, slots(x |> type(double), y |> type(double)))
+        new_collection_layout(Pts, Point, names = c("p1", "p2"))
+      }
+    }
+    Used as types \code{named_vec(State)} / \code{named_borrow_vec(State)},
+    \code{named_mat} / \code{named_borrow_mat}, \code{named_array} /
+    \code{named_borrow_array} and \code{named_collection}. Name indices such as
+    \code{y[["pred"]]} or \code{m[["t1", "pred"]]} (also mixed with numbers) are
+    resolved to integer indices at translation time; a typo is an error with a
+    suggestion. Names of R arguments are checked and returned objects carry
+    their names. \code{vector("State")} or a declaration
+    (\code{res |> type(named_vec(State))}) allocates one entry per name,
+    \code{vector("State", n)} allocates \code{n} entries.
   }
   \subsection{Derivatives}{
     \code{ast2ast} supports automatic differentiation (AD) in two modes: forward

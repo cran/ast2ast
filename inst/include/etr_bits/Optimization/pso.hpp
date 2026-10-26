@@ -1,10 +1,7 @@
 #ifndef PSO_ETR_HPP
 #define PSO_ETR_HPP
 
-#ifndef STANDALONE_ETR
-#include <R_ext/Random.h>
-#include <Rmath.h>
-#endif
+#include "MersenneTwister.hpp"
 
 namespace etr {
 
@@ -33,13 +30,13 @@ template<typename T> inline auto extract_scalars(const T& obj) {
 
 } // end pso_internally
 
-template<typename F, typename Arg1, typename Arg2, typename Arg3, typename Arg4, typename Arg5, typename Arg6>
+template<typename F, typename Arg1, typename Arg2, typename Arg3, typename Arg4, typename Arg5, typename Arg6, typename Arg7>
 inline auto pso(
   const F& f,
   const Arg1& lb_, const Arg2& ub_,
   const Arg3& ngen_, const Arg4 npop_,
   const Arg5 error_threshold_,
-  const Arg6& global_) {
+  const Arg6& global_, const Arg7& seed_) {
   using R = return_type_t<F>;
   Array<R, Buffer<R>> lb = pso_internally::extract_boundaries(lb_);
   Array<R, Buffer<R>> ub = pso_internally::extract_boundaries(ub_);
@@ -50,6 +47,7 @@ inline auto pso(
   const std::size_t npar_t = static_cast<std::size_t>(get_val(npar));
   Double error_threshold = pso_internally::extract_scalars(error_threshold_);
   Logical  global= pso_internally::extract_scalars(global_);
+  Integer seed = pso_internally::extract_scalars(seed_);
   ass<"Length mismatch of lower and upper boundary">(lb.size() == ub.size());
   ass<"the boundaries have to have at least one value">(lb.size() >= 1);
   for (std::size_t i = 0; i < lb.size(); i++) {
@@ -60,9 +58,9 @@ inline auto pso(
   ass<"npop has to be at least 5">(npop >= Integer(5));
   ass<"ngen has to be at least 10">(ngen >= Integer(10));
   Array<R, Buffer<R>> swarm(SI{npop_t * npar_t});
-  swarm.dim = std::vector<std::size_t>{npar_t, npop_t};
+  swarm.dim = Dim{npar_t, npop_t};
   Array<R, Buffer<R>> v(SI{npop_t * npar_t});
-  v.dim = std::vector<std::size_t>{npar_t, npop_t};
+  v.dim = Dim{npar_t, npop_t};
   Array<R, Buffer<R>> swarm_bests = numeric(npop);
   Array<R, Buffer<R>> swarm_errors = numeric(npop);
   const Double initial_cog = Double(2.5);
@@ -73,16 +71,14 @@ inline auto pso(
   const Double w_max = Double(0.9);
   const Double w_min = Double(0.4);
 
-  const auto runif = [](const double l, const double u) { return Rf_runif(l, u); };
-
-  GetRNGstate();
+  MersenneTwister rng(get_val(seed));
 
   for (std::size_t i = 0; i < npop_t; i++) {
     for (std::size_t j = 0; j < npar_t; j++) {
-      swarm.set(i*npar_t + j, runif(get_val(lb.get(j)), get_val(ub.get(j))));
+      swarm.set(i*npar_t + j, rng.runif(get_val(lb.get(j)), get_val(ub.get(j))));
     }
     Array<R, Borrow<R, BorrowTrait>> particle(
-      &swarm.d.p_val[i * npar_t], npar_t, std::vector<std::size_t>{npar_t}
+      &swarm.d.p_val[i * npar_t], npar_t, Dim{npar_t}
     );
     swarm_errors.set(i, f(particle));
     swarm_bests.set(i, swarm_errors.get(i));
@@ -100,18 +96,16 @@ inline auto pso(
   const std::size_t k_t = static_cast<std::size_t>(get_val(k));
 
   [[maybe_unused]] Array<Integer, Buffer<Integer>> neighberhood(SI{k_t * npop_t});
-  neighberhood.dim = std::vector<std::size_t>{k_t, npop_t};
+  neighberhood.dim = Dim{k_t, npop_t};
   std::vector<int> pool(npop_t);
   const auto calc_neighberhood = [&]() {
     for (std::size_t c = 0; c < npop_t; c++) {
       for (std::size_t r = 0; r < k_t; r++) neighberhood.set(c * k_t + r, Integer(-1));
-      const std::size_t nn =
-        static_cast<std::size_t>(R_unif_index(static_cast<double>(k_t))) + 1;
+      const std::size_t nn = rng.unif_index(k_t) + 1;
       std::iota(pool.begin(), pool.end(), 0);
       std::size_t remaining = npop_t;
       for (std::size_t r = 0; r < nn; r++) {
-        const std::size_t pick =
-          static_cast<std::size_t>(R_unif_index(static_cast<double>(remaining)));
+        const std::size_t pick = rng.unif_index(remaining);
         neighberhood.set(c * k_t + r, Integer(pool[pick]));
         pool[pick] = pool[--remaining];
       }
@@ -134,21 +128,27 @@ inline auto pso(
 
   for (std::size_t idx = 0; idx < npar_t * npop_t; idx++) v.set(idx, R(0.0));
   Array<R, Buffer<R>> swarm_best_params(SI{npar_t * npop_t});
-  swarm_best_params.dim = std::vector<std::size_t>{npar_t, npop_t};
+  swarm_best_params.dim = Dim{npar_t, npop_t};
   for (std::size_t idx = 0; idx < npar_t * npop_t; idx++)
     swarm_best_params.set(idx, R(swarm.d.p_val[idx]));
   Array<R, Buffer<R>> global_best_vec(SI{npar_t});
-  global_best_vec.dim = std::vector<std::size_t>{npar_t};
+  global_best_vec.dim = Dim{npar_t};
   for (std::size_t d = 0; d < npar_t; d++)
     global_best_vec.set(d, R(swarm.d.p_val[static_cast<std::size_t>(get_val(global_best)) * npar_t + d]));
 
-  Integer convergence_check = Integer(0);
-  Integer no_improvement = Integer(0);
+  // SPSO-2011 renews the topology after every stagnating iteration; 50 is gentler
+  constexpr int max_stagnation = 50;
+  int stagnation = 0;
+  bool improved = false;
   const double ngen_d = static_cast<double>(get_val(ngen));
   const bool use_global = static_cast<bool>(global);
 
   for (int iter = 1; iter < static_cast<int>(get_val(ngen)); iter++) {
-    if (iter == 1 || get_val(convergence_check) != 0) calc_neighberhood();
+    if (stagnation >= max_stagnation) {
+      calc_neighberhood();
+      stagnation = 0;
+    }
+    improved = false;
 
     w = Double(get_val(w_max) - iter * (get_val(w_max) - get_val(w_min)) / ngen_d);
     const double cog = get_val(initial_cog)
@@ -174,8 +174,8 @@ inline auto pso(
         ? static_cast<std::size_t>(get_val(global_best)) : best_nb;
       const double* social_pos = &swarm.d.p_val[social * npar_t];
 
-      const double r1 = unif_rand();
-      const double r2 = unif_rand();
+      const double r1 = rng.runif();
+      const double r2 = rng.runif();
       for (std::size_t d = 0; d < npar_t; d++) {
         vel[d] = get_val(w) * vel[d]
                + cog * r1 * (pbest[d]      - pos[d])
@@ -186,7 +186,7 @@ inline auto pso(
       correct_above_ub(pos);
 
       Array<R, Borrow<R, BorrowTrait>> particle(
-        pos, npar_t, std::vector<std::size_t>{npar_t}
+        pos, npar_t, Dim{npar_t}
       );
       const double err = get_val(f(particle));
       const bool ok = std::isfinite(err);
@@ -199,17 +199,14 @@ inline auto pso(
         global_best = Integer(static_cast<int>(i));
         for (std::size_t d = 0; d < npar_t; d++) global_best_vec.set(d, R(pos[d]));
         global_best_error = Double(err);
-        no_improvement = Integer(0);
-      } else {
-        no_improvement = no_improvement + Integer(1);
+        improved = true;
       }
-      convergence_check = convergence_check + Integer(1);
     }
+    stagnation = improved ? 0 : stagnation + 1;
 
     if (static_cast<bool>(global_best_error < error_threshold)) break;
   }
 
-  PutRNGstate();
   return global_best_vec;
 }
 
@@ -217,17 +214,24 @@ inline auto pso(
 // and reuse the implementation above -- keeping return_type_t on a concrete
 // std::function rather than a generic lambda.
 template<typename S, typename A, typename D, typename Arg1, typename Arg2,
-         typename Arg3, typename Arg4, typename Arg5, typename Arg6, typename DArg>
+         typename Arg3, typename Arg4, typename Arg5, typename Arg6, typename Arg7, typename DArg>
 inline auto pso(
   const std::function<S(A, D)>& f,
   const Arg1& lb_, const Arg2& ub_,
   const Arg3& ngen_, const Arg4& npop_,
   const Arg5& error_threshold_,
-  const Arg6& global_, const DArg& data) {
+  const Arg6& global_, const Arg7& seed_, const DArg& data) {
   std::function<S(A)> wrapped =
     [&f, &data](const A& particle) -> S { return f(particle, data); };
-  return pso(wrapped, lb_, ub_, ngen_, npop_, error_threshold_, global_);
+  return pso(wrapped, lb_, ub_, ngen_, npop_, error_threshold_, global_, seed_);
+}
+
+// pso(f, ..., data) with a translated fn (functor): S/A/D from the std::function
+template<typename F, typename... Rest> requires (!IsStdFunction<F> && sizeof...(Rest) == 8)
+inline auto pso(const F& f, const Rest&... rest) {
+  return pso(as_std_function(f), rest...);
 }
 
 } // namespace etr
+
 #endif

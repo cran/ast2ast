@@ -1,4 +1,5 @@
 library(tinytest)
+if (!at_home()) exit_file("slow: compiles; runs at home / CI only")
 library(ast2ast)
 
 # R reference for the DSL get_diag (base R diag() extracts a matrix diagonal)
@@ -284,12 +285,13 @@ expect_true(all(diag_checks))
 
 # diag is templated on the real type during translation
 diag_src <- paste(translate(diag_fct, getsource = TRUE), collapse = "\n")
-expect_true(grepl("etr::diag<etr::Double>", diag_src, fixed = TRUE))
+expect_true(grepl("etr::diag<ETR_REAL>", diag_src, fixed = TRUE))
+expect_true(grepl("using ETR_REAL = etr::Double;", diag_src, fixed = TRUE))
 diag_src_rev <- paste(
   translate(diag_fct, getsource = TRUE, derivative = "reverse"),
   collapse = "\n"
 )
-expect_true(grepl("etr::diag<etr::ReverseDouble>", diag_src_rev, fixed = TRUE))
+expect_true(grepl("using ETR_REAL = etr::ReverseDouble;", diag_src_rev, fixed = TRUE))
 
 # --- insertion sort (functional_tests branch 19) ----------------------------
 # regression test for && / || short-circuit -- see the branch body above

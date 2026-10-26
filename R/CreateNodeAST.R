@@ -6,6 +6,26 @@ process <- function(code, context, env, function_registry) {
   return(var)
 }
 
+# NOTE: R keeps srcrefs only inside `{`; unbraced bodies like if (c) stop() take the line of their parent
+inherit_location <- function(node, location) {
+  if (is.null(location)) return()
+  blocks <- list()
+  if (inherits(node, "if_node")) {
+    blocks <- c(list(node$true_node, node$false_node), lapply(node$else_if_nodes, function(n) n$true_node))
+  } else if (inherits(node, c("for_node", "while_node", "repeat_node"))) {
+    blocks <- list(node$block)
+  }
+  for (b in blocks) {
+    if (!inherits(b, "block_node")) next
+    for (stmt in b$block) {
+      if ("location" %in% names(stmt) && is.null(stmt$location)) {
+        stmt$location <- location
+        inherit_location(stmt, location)
+      }
+    }
+  }
+}
+
 create_ast <- function(code, context, env, function_registry) {
   old_code <- code
   code <- as.list(code)
@@ -21,6 +41,22 @@ create_ast <- function(code, context, env, function_registry) {
     b_node$block <- lapply(code[-1], function(line) {
       process(line, operator, env, function_registry)
     })
+    # the user's code for runtime error labels; stringify() shows normalised code (x[3.0], true)
+    for (i in seq_along(b_node$block)) {
+      if ("source_line" %in% names(b_node$block[[i]])) {
+        b_node$block[[i]]$source_line <- paste(trimws(deparse(code[[i + 1L]], width.cutoff = 500L)), collapse = " ")
+      }
+    }
+    refs <- attr(old_code, "srcref")
+    if (length(refs) == length(code)) {
+      # NOTE: stored on the node, not by index; later passes insert statements into the block
+      for (i in seq_along(b_node$block)) {
+        if ("location" %in% names(b_node$block[[i]])) {
+          b_node$block[[i]]$location <- srcref_location(refs[[i + 1L]])
+          inherit_location(b_node$block[[i]], b_node$block[[i]]$location)
+        }
+      }
+    }
     b_node$context <- context
     return(b_node)
   } else if (operator == "repeat") {
@@ -44,10 +80,10 @@ create_ast <- function(code, context, env, function_registry) {
   } else if (operator == "fn") {
     parts <- as.list(code)[-1]
     if (!is.null(names(parts)) && any(nzchar(names(parts)))) {
-      stop("fn() takes no named arguments -- use fn(argtypes(...), return(spec), { ... })")
+      stop("fn() takes no named arguments -- use fn(argtypes(...), return(spec), { ... })", call. = FALSE)
     }
     if (length(parts) != 3L) {
-      stop("fn() takes exactly three parts: argtypes(...), return(spec), and a { } block")
+      stop("fn() takes exactly three parts: argtypes(...), return(spec), and a { } block", call. = FALSE)
     }
     args_call <- parts[[1L]]
     return_call <- parts[[2L]]
@@ -66,6 +102,7 @@ create_ast <- function(code, context, env, function_registry) {
     fn$args_f_raw <- args_call
     fn$return_type <- parse_return(return_call, FALSE, env$real_type, env$known_types)[[1]]
     fn$AST <- body_block |> wrap_in_block()
+    fn$raw_body <- body_block
     fn$context <- context
     # assigned fns get their real name at TypeInference (type$fct_name <- variable);
     # an inline fn (map/Reduce/Filter/uniroot arg) never does -- give it a label
@@ -75,14 +112,43 @@ create_ast <- function(code, context, env, function_registry) {
     }
     return(fn)
   } else if (operator == "function") {
-    stop("Defining a function inside f is not supported. Use fn() to declare a nested function: fn(argtypes(...), return(spec), { ... }).")
+    body <- code[[3L]] |> wrap_in_block()
+    if (length(body) < 4L) {
+      stop("function() requires the definition of: argtypes(...), returntype(...) followed by the function body itself", call. = FALSE)
+    }
+    args_call <- body[[2L]]
+    temp_f <- function() {}
+    formals(temp_f) <- code[[2L]]
+    body(temp_f) <- body
+    argtypes_match_formals(temp_f, args_call)
+    return_call <- body[[3L]]
+    body <- keep_trailing_srcrefs(body[c(-2, -3)], body)
+    fn <- fn_node$new()
+    fn$function_registry <- function_registry$clone(deep = TRUE)
+    fn$function_registry_outer <- function_registry
+    fn$known_types <- env$known_types
+    fn$args_f <- parse_argtypes(args_call, TRUE, FALSE, env$real_type, env$known_types)
+    fn$args_f_raw <- args_call
+    fn$return_type <- parse_return(return_call, FALSE, env$real_type, env$known_types, TRUE)[[1]]
+    fn$AST <- body |> wrap_in_block()
+    fn$raw_body <- body
+    fn$context <- context
+    # assigned fns get their real name at TypeInference (type$fct_name <- variable);
+    # an inline fn (map/Reduce/Filter/uniroot arg) never does -- give it a label
+    fn$fct_name <- "<anonymous>"
+    if (!function_registry$valid_fn_context(context)) {
+      fn$error <- "You have to assign functions (fn) to variables"
+    }
+    return(fn)
   } else if (function_registry$is_group_functions(operator) || length(code) > 3) {
     # by adding length(code) > 3 also wrong fcts are added to the AST
+    code <- fill_default_args(code, operator, function_registry)
     fn <- function_node$new()
     fn$operator <- operator
     fn$args <- lapply(code[-1], function(x) {
       process(x, operator, env, function_registry)
     })
+    fn$call_arg_names <- names(code)[-1]
     fn$context <- context
     return(fn)
   } else if (length(code) == 3) {
@@ -105,6 +171,7 @@ create_ast <- function(code, context, env, function_registry) {
     bn$left_node <- code[[2]] |> process(operator, env, function_registry)
     bn$context <- context
     bn$is_infix <- operator %in% infix_ops
+    bn$call_arg_names <- names(code)[-1]
     if (operator == "$" && inherits(bn$right_node, "variable_node")) {
       bn$right_node$field_name <- TRUE
     }
@@ -114,6 +181,7 @@ create_ast <- function(code, context, env, function_registry) {
     un$operator <- operator
     un$obj <- code[[2]] |> process(operator, env, function_registry)
     un$context <- context
+    un$call_arg_names <- names(code)[-1]
     return(un)
   } else if (length(code) == 1) {
     nn <- nullary_node$new()
@@ -121,7 +189,7 @@ create_ast <- function(code, context, env, function_registry) {
     nn$context <- context
     return(nn)
   } else {
-    stop("Unexpected error during AST creation. Please create an issue on https://github.com/Konrad1991/ast2ast")
+    stop("Unexpected error during AST creation. Please create an issue on https://github.com/Konrad1991/ast2ast", call. = FALSE)
   }
 }
 
@@ -132,26 +200,26 @@ parse_body <- function(b, env, function_registry) {
     process(b, "Start", env, function_registry)
   }, silent = TRUE)
   if (inherits(ast, "try-error")) {
-    error_string <- ast |> as.character()
-    stop(sprintf("Could not translate the function due to %s", error_string))
+    error_string <- try_message(ast)
+    stop(sprintf("Could not translate the function due to %s", error_string), call. = FALSE)
   }
   return(ast)
 }
 
 # update function registry
 # ========================================================================
-update_function_registry <- function(ast, function_registry) {
-  e <- try(traverse_ast(ast, action_update_function_registry, function_registry), silent = TRUE)
+update_function_registry <- function(ast, function_registry, namespace = "f_impl") {
+  e <- try(traverse_ast(ast, action_update_function_registry, function_registry, namespace), silent = TRUE)
   if (inherits(e, "try-error")) {
-    error_string <- e |> as.character()
-    stop(sprintf("Could not update the function registry due to: %s", error_string))
+    error_string <- try_message(e)
+    stop(sprintf("Could not update the function registry due to: %s", error_string), call. = FALSE)
   }
   line <- try( { ast$stringify_error_line() }, silent = TRUE)
   if (inherits(line, "try-error")) {
-    stop("error: Could not stringify the AST")
+    stop("error: Could not stringify the AST", call. = FALSE)
   }
   if (err_found(line)) {
-    stop(paste0("\n", line))
+    stop(line, call. = FALSE)
   }
 }
 
@@ -160,20 +228,20 @@ update_function_registry <- function(ast, function_registry) {
 run_checks <- function(ast, r_fct, function_registry, known_types = list()) {
   e <- try(traverse_ast(ast, action_error, r_fct, function_registry, known_types), silent = TRUE)
   if (inherits(e, "try-error")) {
-    stop("error: Could not run checks on AST")
+    stop("error: Could not run checks on AST", call. = FALSE)
   }
   info_env <- new.env(parent = emptyenv())
   info_env$in_loop <- FALSE
   e <- try(traverse_ast(ast, action_check_break_next, info_env), silent = TRUE)
   if (inherits(e, "try-error")) {
-    stop("error: Could not run checks on AST")
+    stop("error: Could not run checks on AST", call. = FALSE)
   }
   line <- try( { ast$stringify_error_line() }, silent = TRUE)
   if (inherits(line, "try-error")) {
-    stop("error: Could not stringify the AST")
+    stop("error: Could not stringify the AST", call. = FALSE)
   }
   if (err_found(line)) {
-    stop(paste0("\n", line))
+    stop(line, call. = FALSE)
   }
 }
 
@@ -184,31 +252,67 @@ sort_args <- function(ast, function_registry) {
     traverse_ast(ast, action_sort_args, function_registry)
   )
   if (inherits(e, "try-error")) {
-    stop("error: Could not sort the arguments")
+    stop("error: Could not sort the arguments", call. = FALSE)
   }
   return(ast)
 }
 
 # Infer types
 # ========================================================================
-infer_types <- function(ast, f, f_args, r_fct, real_type, function_registry, known_types = list()) {
+# NOTE: inference is a single pass, but a range variable can be downgraded to
+# vec(int) after another variable was already inferred from it (j <- i; i <- c(1L)).
+# In C++ a vector cannot be assigned to an IntRange, so repeat until stable.
+settle_range_vars <- function(ast, env) {
+  repeat {
+    changed <- FALSE
+    traverse_ast(ast, function(node, ...) {
+      if (!inherits(node, "binary_node") || !(node$operator %in% c("<-", "=")) ||
+          !inherits(node$left_node, "variable_node")) {
+        return()
+      }
+      name <- deparse(node$left_node$name)
+      if (!is_range_type(env$vars_list[[name]])) return()
+      t <- infer(node$right_node, env$vars_list, env, env$function_registry)
+      if (!is_range_type(t)) {
+        env$vars_list[[name]] <- strip_range(env$vars_list[[name]])
+        changed <<- TRUE
+      }
+    })
+    if (!changed) break
+  }
+}
+
+infer_types <- function(ast, f, f_args, r_fct, real_type, function_registry, known_types = list(), extra_vars = list()) {
   vars_list <- create_vars_types_list(ast, f, f_args, r_fct, real_type, known_types)
+  vars_list[names(extra_vars)] <- extra_vars
   env <- new.env(parent = emptyenv())
   env$vars_list <- vars_list
   env$r_fct <- r_fct
   env$real_type <- real_type
   env$function_registry <- function_registry
   env$known_types <- known_types
-  e <- try(traverse_ast(ast, type_infer_action, env), silent = TRUE)
+  e <- try({
+    traverse_ast(ast, type_infer_action, env)
+    settle_range_vars(ast, env)
+  }, silent = TRUE)
   if (inherits(e, "try-error")) {
-    stop(sprintf("Error: Could not infer the types, caused by %s", as.character(e)))
+    stop(sprintf("Could not infer the types, caused by %s", try_message(e)), call. = FALSE)
   }
   line <- try( { ast$stringify_error_line() }, silent = TRUE)
   if (inherits(line, "try-error")) {
-    stop("error: Could not stringify the AST")
+    stop("error: Could not stringify the AST", call. = FALSE)
   }
   if (err_found(line)) {
-    stop(line)
+    stop(line, call. = FALSE)
+  }
+  # a variable only ever read, never assigned, stays unknown_type here; catch it
+  # now with the same message type_checking()'s type_list_checks() would give
+  # later -- but before callers poke at unknown_type's non-existent/locked
+  # real_type field. Only the unknown_type half of type_list_checks() applies
+  # here: the NA/NaN/Inf base-type check needs later passes to have run first.
+  unresolved <- names(env$vars_list)[vapply(env$vars_list, inherits, logical(1), "unknown_type")]
+  if (length(unresolved)) {
+    stop(uninitialized_msg(unresolved[[1L]]), call. = FALSE)
   }
   return(env$vars_list)
 }
@@ -220,20 +324,20 @@ type_checking <- function(ast, vars_types_list, r_fct, real_type, function_regis
   type_list_checks(vars_types_list)
   e <- try(traverse_ast(ast, action_check_type_of_args, vars_types_list, r_fct, real_type, function_registry, known_types))
   if (inherits(e, "try-error")) {
-    stop("Could not check the type of the arguments to functions")
+    stop("Could not check the type of the arguments to functions", call. = FALSE)
   }
   line <- try( { ast$stringify_error_line() }, silent = TRUE)
   if (inherits(line, "try-error")) {
-    stop("error: Could not stringify the AST")
+    stop("error: Could not stringify the AST", call. = FALSE)
   }
   if (err_found(line)) {
-    stop(line)
+    stop(line, call. = FALSE)
   }
 }
 
 # Determine the type of each return Expression
 # ========================================================================
-determine_types_of_returns <- function(ast, vars_types_list, r_fct, real_type, function_registry, known_types = list()) {
+determine_types_of_returns <- function(ast, vars_types_list, r_fct, real_type, function_registry, known_types = list(), declared_return_type = NULL, fct_name = NULL) {
   type <- NULL
   env <- new.env(parent = emptyenv())
   env$vars_list <- vars_types_list
@@ -252,47 +356,82 @@ determine_types_of_returns <- function(ast, vars_types_list, r_fct, real_type, f
     ast, type_infer_return_action, env
   ), silent = TRUE)
   if (inherits(e, "try-error")) {
-    stop("Error: Could not infer the return type")
+    stop("Error: Could not infer the return type", call. = FALSE)
   }
   line <- try( { ast$stringify_error_line() }, silent = TRUE)
   if (inherits(line, "try-error")) {
-    stop("error: Could not stringify the AST")
+    stop("error: Could not stringify the AST", call. = FALSE)
   }
   if (err_found(line)) {
-    stop(line)
+    stop(line, call. = FALSE)
   }
   # r_fct returns SEXP, so a valueless path (return()/NULL) and a value return
   # mix fine. XPtr has one concrete return type -> the two cannot coexist,
   # whether the valueless path is user-written or inserted by
   # create_return_statement for a fall-through.
   if (!r_fct && env$found_void_return && env$found_non_void_return) {
-    stop("An XPtr function must return a value on every path, or on none: found both a valueless path and a value return")
+    stop("An XPtr function must return a value on every path, or on none: found both a valueless path and a value return", call. = FALSE)
   }
   # Reduce the value returns to one type; character entries are void markers
   # ("R_NilValue" / "void"). r_fct returns SEXP so nothing is reconciled.
   value_types <- Filter(function(t) !is.character(t), env$return_list)
+  if (!is.null(declared_return_type)) {
+    return(validate_declared_return_type(
+      declared_return_type, value_types, env$found_void_return, env$found_non_void_return, fct_name))
+  }
   reconcile_return_types(value_types, r_fct)
 }
 
 # Translates the AST representation into C++ code
 # ========================================================================
-translate_to_cpp_code <- function(ast, r_fct, real_type, function_registry, debug = TRUE, outer_var_names = character(0)) {
+translate_to_cpp_code <- function(ast, r_fct, real_type, function_registry, debug = TRUE, var_list, namespace = "f_impl", function_name = NULL) {
   code_string <- NULL
-  traverse_ast(ast, action_transpile_inner_functions, real_type, debug, outer_var_names)
-  traverse_ast(ast, action_snapshot_lines, debug)
+  traverse_ast(ast, action_transpile_inner_functions, real_type, debug, var_list, namespace)
+  traverse_ast(ast, action_snapshot_lines, debug, function_name)
   traverse_ast(ast, action_set_true, r_fct, real_type)
   traverse_ast(ast, action_translate, function_registry, real_type)
   # Stringify ast
   e <- try({code_string <- ast$stringify("  ")}, silent = TRUE)
   if (inherits(e, "error")) {
-    stop("error: Could not stringify the AST")
+    stop("error: Could not stringify the AST", call. = FALSE)
   }
   c(code_string, "\n")
 }
 
+# All named fns (also nested ones) as functors: first all declared, then
+# defined -> recursion and calls in any order work
+define_functors <- function(ast) {
+  env <- new.env(parent = emptyenv())
+  env$fns <- list()
+  collect <- function(node) {
+    if (!inherits(node, "fn_node")) return()
+    if (!is.null(node$cpp_path)) env$fns[[length(env$fns) + 1L]] <- node
+    for (stmt in node$AST$block) traverse_ast(stmt, collect)
+  }
+  traverse_ast(ast, collect)
+  if (length(env$fns) == 0L) return("")
+  in_namespace <- function(fn, code) {
+    sprintf("namespace %s {\n%s\n}", sub("::[^:]+$", "", fn$cpp_path), code)
+  }
+  declarations <- vapply(env$fns, function(fn) {
+    in_namespace(fn, sprintf("template<typename %s> struct %s;", SCALAR_CPP, sub("^.*::", "", fn$cpp_path)))
+  }, character(1))
+  definitions <- vapply(env$fns, function(fn) in_namespace(fn, fn$define_functor()), character(1))
+  paste(c(declarations, definitions), collapse = "\n")
+}
+
 # Assembles function (includes, signature, declarations, body)
 # ========================================================================
-assemble <- function(name_fct, vars_types_list, return_type, body, real_type, r_fct, known_types = list(), debug = TRUE) {
+clean_lines <- function(code) {
+  res <- strsplit(code, "\n")[[1]]
+  res <- res[res != "\n"]
+  res <- res[res != ";"]
+  res <- res[res != ""]
+  paste0(res, collapse = "\n")
+}
+
+# struct definitions + function definition without includes or export glue
+assemble_fn_def <- function(name_fct, vars_types_list, return_type, body, real_type, r_fct, known_types = list(), debug = TRUE, functor_defs = "") {
 
   arguments <- lapply(vars_types_list, function(x) {
     x$signature()
@@ -304,6 +443,7 @@ assemble <- function(name_fct, vars_types_list, return_type, body, real_type, r_
   if (struct_defs != "") {
     struct_defs <- paste0("namespace {\n", struct_defs, "\n}\n")
   }
+  struct_defs <- paste0("using ", SCALAR_CPP, " = ", real_type, ";\n", struct_defs, "\n", functor_defs)
 
   declarations <- lapply(vars_types_list, \(x) {
     res <- x$declare(indent = "")
@@ -327,67 +467,37 @@ assemble <- function(name_fct, vars_types_list, return_type, body, real_type, r_
   }
 
   body <- paste0(body, "\n")
-  wrap_for_debug <- function(b) {
-    if (!debug) return(b)
-    paste0(
-      "try {\n", b,
+  if (debug) {
+    body <- paste0(
+      "try {\n", body,
       "} catch (const std::exception& e) {\n",
       "  Rcpp::stop(std::string(\"In '\") + etr::current_line() + \"': \" + e.what());\n",
       "}\n"
     )
   }
+  ret <- if (r_fct) "SEXP" else ret_type
+  signature <- paste0(ret, " ", name_fct, "(", paste(arguments, collapse = ", "), ") {")
+  def <- paste0(c(signature, tape_clear, declarations, body, "}\n"), collapse = "\n")
+
+  list(
+    struct_defs = struct_defs, def = clean_lines(def), name = as.character(name_fct),
+    ret_type = ret_type, arguments = arguments
+  )
+}
+
+assemble <- function(name_fct, vars_types_list, return_type, body, real_type, r_fct, known_types = list(), debug = TRUE, functor_defs = "") {
+  parts <- assemble_fn_def(name_fct, vars_types_list, return_type, body, real_type, r_fct, known_types, debug, functor_defs)
   if (r_fct) {
-    signature <- paste0("SEXP ", name_fct, "(", paste(arguments, collapse = ", "), ") {")
-    declarations <- combine_strings(declarations, "\n")
-    includes <- r_fct_sig()
-    wrapped_body <- wrap_for_debug(body)
-    res <- paste0(
-      c(
-        includes,
-        struct_defs, "\n",
-        "// [[Rcpp::export]]",
-        signature, "\n",
-        tape_clear, "\n",
-        declarations, "\n",
-        wrapped_body, "}\n"
-      ),
-      collapse = "\n\n"
-    )
-    res <- strsplit(res, "\n")[[1]]
-    res <- res[res != "\n"]
-    res <- res[res != ";"]
-    res <- res[res != ""]
-    paste0(res, collapse = "\n")
+    res <- c(r_fct_sig(), parts$struct_defs, "// [[Rcpp::export]]", parts$def)
   } else {
-    includes <- xptr_sig()
-    signature <- paste0(ret_type, " ", name_fct, "(", paste(arguments, collapse = ", "), ") {")
-    declarations <- combine_strings(declarations, "\n")
-    def_get_xptr <- "SEXP getXPtr() {\n"
     typedef_line <- paste0(
-      "   typedef ", ret_type, "(*fct_ptr) (",
-      paste(arguments, collapse = ", "), ");"
+      "   typedef ", parts$ret_type, "(*fct_ptr) (",
+      paste(parts$arguments, collapse = ", "), ");"
     )
-    rest <- sprintf("   return Rcpp::XPtr<fct_ptr>(new fct_ptr(&  %s ));\n }", as.character(name_fct))
-    wrapped_body <- wrap_for_debug(body)
-    res <- paste0(
-      c(
-        includes, "\n",
-        struct_defs, "\n",
-        signature, "\n",
-        tape_clear, "\n",
-        declarations, "\n",
-        wrapped_body, "}\n\n",
-        def_get_xptr,
-        typedef_line, "\n",
-        rest),
-      collapse = "\n"
-    )
-    res <- strsplit(res, "\n")[[1]]
-    res <- res[res != "\n"]
-    res <- res[res != ";"]
-    res <- res[res != ""]
-    paste0(res, collapse = "\n")
+    rest <- sprintf("   return Rcpp::XPtr<fct_ptr>(new fct_ptr(&  %s ));\n }", parts$name)
+    res <- c(xptr_sig(), parts$struct_defs, parts$def, "SEXP getXPtr() {", typedef_line, rest)
   }
+  clean_lines(paste0(res, collapse = "\n"))
 }
 
 resolve_derivative <- function(derivative) {
@@ -404,7 +514,7 @@ resolve_derivative <- function(derivative) {
 # the nested-fn check in process().
 argtypes_arg_names <- function(argtypes) {
   if (!is.call(argtypes) || !identical(deparse(argtypes[[1L]]), "argtypes")) {
-    stop("expected an argtypes(...) block")
+    stop("expected an argtypes(...) block", call. = FALSE)
   }
   entries <- as.list(argtypes)[-1L] # drop the `argtypes` head
   if (length(entries) == 0L) return(character(0L))
@@ -417,7 +527,7 @@ argtypes_arg_names <- function(argtypes) {
     }
     if (!is.call(x) || !identical(as.character(x[[1L]]), "type")) {
       stop(sprintf("argtypes() entry %s is not of the form `<name> |> type(...)`",
-        deparse(x)))
+        deparse(x)), call. = FALSE)
     }
     as.character(x[[2L]])
   }
@@ -426,7 +536,7 @@ argtypes_arg_names <- function(argtypes) {
   dups <- unique(at_names[duplicated(at_names)])
   if (length(dups) > 0L) {
     stop(sprintf("argtypes() declares %s more than once",
-      paste0("'", dups, "'", collapse = ", ")))
+      paste0("'", dups, "'", collapse = ", ")), call. = FALSE)
   }
   at_names
 }
@@ -441,7 +551,7 @@ argtypes_match_formals <- function(f, argtypes) {
   at_names <- argtypes_arg_names(argtypes)
   if (length(at_names) == 0L) {
     if (length(formal_args) == 0L) return(invisible())
-    stop("argtypes() is empty, which is only valid for a function with no arguments")
+    stop("argtypes() is empty, which is only valid for a function with no arguments", call. = FALSE)
   }
 
   extra <- setdiff(at_names, formal_args)
@@ -456,21 +566,21 @@ argtypes_match_formals <- function(f, argtypes) {
         msg <- paste0(msg, sprintf(" (did you mean '%s'?)", formal_args[which.min(d)]))
       }
     }
-    stop(msg)
+    stop(msg, call. = FALSE)
   }
 
   missing <- setdiff(formal_args, at_names)
   if (length(missing) > 0L) {
     stop(sprintf(
       "argtypes() gives no type for %s -- every argument must be typed when argtypes() is present",
-      paste0("'", missing, "'", collapse = ", ")))
+      paste0("'", missing, "'", collapse = ", ")), call. = FALSE)
   }
 
   # same set of names now -- the order must match the function signature
   if (!identical(at_names, formal_args)) {
     stop(sprintf(
       "argtypes() must list the arguments in the same order as the function: expected (%s), got (%s)",
-      paste(formal_args, collapse = ", "), paste(at_names, collapse = ", ")))
+      paste(formal_args, collapse = ", "), paste(at_names, collapse = ", ")), call. = FALSE)
   }
 
   invisible()
@@ -493,14 +603,39 @@ translate_internally <- function(fct, types_fct, derivative, name_fct, r_fct, de
     is_args <- is_args[-1L]
   }
   if (any(is_args)) {
-    stop("argtypes(...) must be the first statement of the function body")
+    stop("argtypes(...) must be the first statement of the function body", call. = FALSE)
   }
   if (!is.null(args_fct)) {
     argtypes_match_formals(fct, args_fct)
   }
-  b <- as.call(c(as.name("{"), stmts))
+
+  # An optional returntype(...) statement, directly following argtypes(...)
+  # when both are present, declares the function's return type -- same idea
+  # as argtypes() above, mirrored from the inner function() syntax.
+  is_ret <- vapply(stmts, function(s) {
+    is.call(s) && identical(deparse(s[[1L]]), "returntype")
+  }, logical(1L))
+  returntype_fct <- NULL
+  if (length(is_ret) >= 1L && is_ret[[1L]]) {
+    returntype_fct <- stmts[[1L]]
+    stmts <- stmts[-1L]
+    is_ret <- is_ret[-1L]
+  }
+  if (any(is_ret)) {
+    stop("returntype(...) must directly follow argtypes(...) as the first statement of the function body", call. = FALSE)
+  }
+  b <- keep_trailing_srcrefs(as.call(c(as.name("{"), stmts)), body(fct))
 
   known_types <- make_known_types(types_fct, r_fct, real_type)
+
+  declared_return_type <- NULL
+  if (!is.null(returntype_fct)) {
+    declared_return_type <- parse_return(returntype_fct, r_fct, real_type, known_types, TRUE)[[1]]
+    declared_return_type$real_type <- real_type
+    if (!is.null(declared_return_type$get_error())) {
+      stop(sprintf("Wrong return type for function %s: %s", name_fct, declared_return_type$get_error()), call. = FALSE)
+    }
+  }
 
   env <- new.env(parent = emptyenv())
   env$r_fct <- r_fct
@@ -510,8 +645,9 @@ translate_internally <- function(fct, types_fct, derivative, name_fct, r_fct, de
   # Create AST
   AST <- parse_body(b, env, function_registry)
 
-  # Update function_registry
-  update_function_registry(AST, function_registry)
+  # Update function_registry; inner fns become functors in namespace <name>_impl
+  namespace <- paste0(as.character(name_fct), "_impl")
+  update_function_registry(AST, function_registry, namespace)
 
   # Run checks
   run_checks(AST, r_fct, function_registry, known_types)
@@ -526,23 +662,24 @@ translate_internally <- function(fct, types_fct, derivative, name_fct, r_fct, de
   type_checking(AST, vars_types_list, r_fct, real_type, function_registry, known_types)
 
   # Determine return type
-  return_type <- determine_types_of_returns(AST, vars_types_list, r_fct, real_type, function_registry, known_types)
+  return_type <- determine_types_of_returns(AST, vars_types_list, r_fct, real_type, function_registry, known_types, declared_return_type, as.character(name_fct))
 
   # A string return is fine for output "R" (Cast(const char*) -> mkString) but
   # has no C++ type for the XPtr signature -- reject before it hits the compiler.
   if (!r_fct && inherits(return_type, "pre_type_node") &&
       identical(return_type$get_base_type(), "character")) {
-    stop("An XPtr function cannot return a string")
+    stop("An XPtr function cannot return a string", call. = FALSE)
   }
 
   # Translate
-  code_string <- translate_to_cpp_code(AST, r_fct, real_type, function_registry, debug, names(vars_types_list))
+  code_string <- translate_to_cpp_code(AST, r_fct, real_type, function_registry, debug, vars_types_list, namespace, as.character(name_fct))
   for (i in seq_along(vars_types_list)) {
     vars_types_list[[i]]$real_type <- real_type
   }
+  functor_defs <- define_functors(AST)
 
   # Create function signature & variable declarations
-  code <- assemble(name_fct, vars_types_list, return_type, code_string, real_type, r_fct, known_types, debug)
+  code <- assemble(name_fct, vars_types_list, return_type, code_string, real_type, r_fct, known_types, debug, functor_defs)
   code <- remove_blank_lines(code)
   return(code)
 }

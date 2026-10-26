@@ -2,13 +2,16 @@
 #define SEXPCONVERSION_ETR_HPP
 
 #include <cstring>
+#include <initializer_list>
 
 namespace etr {
 
 // Evaluation: this is required as the lifetime for some objects do not survive the function itself
 // -----------------------------------------------------------------------------------------------------------
 template<typename T>
-inline auto Evaluate(T && obj) {
+// NOTE: decltype(auto), not auto: auto decays the forwarded reference and
+// copies a concrete array (alloc + per-element copy) on every Cast.
+inline decltype(auto) Evaluate(T && obj) {
   constexpr bool is_scalar = IsScalarLike<Decayed<T>>;
   // Materialize lazy expression views (BinaryOp, SubsetView, ...) into a
   // concrete RBuffer. Concrete arrays — LBuffer, RBuffer, Borrow — already
@@ -26,7 +29,7 @@ inline auto Evaluate(T && obj) {
     res.dim = std::move(obj.get_dim());
     return res;
   } else {
-    return std::forward<decltype(obj)>(obj);
+    return std::forward<T>(obj);
   }
 }
 inline auto Evaluate() {
@@ -48,46 +51,40 @@ template<>
 inline Logical SEXP2Scalar<Logical>(SEXP s) {
   ass<"R object is not of type logical">(Rf_isLogical(s));
   const R_xlen_t sz = Rf_xlength(s);
-  ass<"Argument has length > 1">(sz == 1);
-  const bool b = LOGICAL(s)[0];
-  ass<"NA logical not allowed">(b != NA_LOGICAL);
-  return Logical(b != 0); // R bool is int
+  ass<"Argument has to be of length 1">(sz == 1);
+  // Logical(int) keeps NA_LOGICAL (INT_MIN) as NA
+  return Logical(LOGICAL(s)[0]);
 }
 template<>
 inline Integer SEXP2Scalar<Integer>(SEXP s) {
   ass<"R object is not of type integer">(Rf_isInteger(s));
   const R_xlen_t sz = Rf_xlength(s);
-  ass<"Argument has length > 1">(sz == 1);
-  const int i = INTEGER(s)[0];
-  ass<"NA integer not allowed">(i != NA_INTEGER);
-  return Integer(i);
+  ass<"Argument has to be of length 1">(sz == 1);
+  return Integer(INTEGER(s)[0]);
 }
 template<>
 inline Double SEXP2Scalar<Double>(SEXP s) {
   ass<"R object is not of type double">(Rf_isReal(s));
   const R_xlen_t sz = Rf_xlength(s);
-  ass<"Argument has length > 1">(sz == 1);
-  const double d = REAL(s)[0];
-  ass<"NA/NaN double not allowed">(!ISNA(d) && !ISNAN(d));
-  return Double(d);
+  ass<"Argument has to be of length 1">(sz == 1);
+  return Double(REAL(s)[0]);
 }
 template<>
 inline Dual SEXP2Scalar<Dual>(SEXP s) {
   ass<"R object is not of type double">(Rf_isReal(s));
   const R_xlen_t sz = Rf_xlength(s);
-  ass<"Argument has length > 1">(sz == 1);
-  const double d = REAL(s)[0];
-  ass<"NA/NaN double not allowed">(!ISNA(d) && !ISNAN(d));
-  return Dual(d, 0.0);
+  ass<"Argument has to be of length 1">(sz == 1);
+  return Dual(REAL(s)[0], 0.0);
 }
 template<>
 inline ReverseDouble SEXP2Scalar<ReverseDouble>(SEXP s) {
   ass<"R object is not of type double">(Rf_isReal(s));
   const R_xlen_t sz = Rf_xlength(s);
-  ass<"Argument has length > 1">(sz == 1);
+  ass<"Argument has to be of length 1">(sz == 1);
   const double d = REAL(s)[0];
-  ass<"NA/NaN double not allowed">(!ISNA(d) && !ISNAN(d));
-  return ReverseDouble::Var(d);
+  ReverseDouble res = ReverseDouble::Var(d);
+  res.is_na = static_cast<uint8_t>(ISNA(d));
+  return res;
 }
 
 inline const char* r_type_name(SEXP s) {
@@ -103,16 +100,27 @@ inline const char* r_type_name(SEXP s) {
 // T(double)/T(int) via 0's null-pointer-constant conversion), so this
 // extracts the value itself for those; arrays/borrows/structs already have
 // one, so this only validates and hands s back unchanged.
+inline void check_scalar_length(SEXP s, const char* name, const char* type_name) {
+  const R_xlen_t len = Rf_xlength(s);
+  if (len != 1) [[unlikely]] {
+    ass(false, std::string("Argument '") + name + "' must be a scalar " + type_name + ", got length " +
+                 std::to_string(len));
+  }
+}
+
 template <typename T>
 inline decltype(auto) CheckSEXP(SEXP s, const char* name) {
   if constexpr (IsDouble<T> || IsDual<T> || IsReverseDouble<T>) {
     ass(Rf_isReal(s), std::string("Type mismatch for '") + name + "': expected double, got " + r_type_name(s));
+    check_scalar_length(s, name, "double");
     return SEXP2Scalar<T>(s);
   } else if constexpr (IsInteger<T>) {
     ass(Rf_isInteger(s), std::string("Type mismatch for '") + name + "': expected integer, got " + r_type_name(s));
+    check_scalar_length(s, name, "integer");
     return SEXP2Scalar<T>(s);
   } else if constexpr (IsLogical<T>) {
     ass(Rf_isLogical(s), std::string("Type mismatch for '") + name + "': expected logical, got " + r_type_name(s));
+    check_scalar_length(s, name, "logical");
     return SEXP2Scalar<T>(s);
   } else if constexpr (IsArray<T>) {
     using ElemT = typename ExtractDataType<T>::value_type;
@@ -131,13 +139,126 @@ inline decltype(auto) CheckSEXP(SEXP s, const char* name) {
   }
 }
 
+// named_vec arguments: at least as long as the names and (if the R vector
+// has names) the names have to match the definition; unnamed is accepted
+inline void CheckNames(SEXP s, const char* arg, const char* type_name,
+                       std::initializer_list<const char*> names) {
+  const R_xlen_t n = static_cast<R_xlen_t>(names.size());
+  const R_xlen_t len = Rf_xlength(s);
+  if (len < n) [[unlikely]] {
+    ass(false, std::string("Length of '") + arg + "' does not match layout " + type_name +
+                 ": expected at least " + std::to_string(n) + ", got " + std::to_string(len));
+  }
+  SEXP r_names = Rf_getAttrib(s, R_NamesSymbol);
+  if (r_names == R_NilValue) return;
+  R_xlen_t i = 0;
+  for (const char* expected : names) {
+    const char* found = CHAR(STRING_ELT(r_names, i));
+    if (std::strcmp(found, expected) != 0) [[unlikely]] {
+      ass(false, std::string("Names of '") + arg + "' do not match layout " + type_name +
+                   ": position " + std::to_string(i + 1) + " is '" + found + "', expected '" + expected + "'");
+    }
+    ++i;
+  }
+}
+
+// named_vec return values: names attached; entries beyond the names get ""
+inline SEXP AttachNames(SEXP s, std::initializer_list<const char*> names) {
+  // NOTE: a borrowed argument returned as is must not get names in the caller
+  if (MAYBE_REFERENCED(s)) s = Rf_duplicate(s);
+  PROTECT(s);
+  const R_xlen_t len = Rf_xlength(s);
+  SEXP r_names = PROTECT(Rf_allocVector(STRSXP, len));
+  R_xlen_t i = 0;
+  for (const char* name : names) {
+    if (i >= len) break;
+    SET_STRING_ELT(r_names, i++, Rf_mkChar(name));
+  }
+  for (; i < len; ++i) SET_STRING_ELT(r_names, i, R_BlankString);
+  Rf_setAttrib(s, R_NamesSymbol, r_names);
+  UNPROTECT(2);
+  return s;
+}
+
+// named_mat / named_array arguments: number of dimensions, each dimension at
+// least as long as its names and (if the R object has dimnames) the names have
+// to match; an empty list = a dimension without names
+inline void CheckDimNames(SEXP s, const char* arg, const char* type_name,
+                          std::initializer_list<std::initializer_list<const char*>> dims) {
+  SEXP dim = Rf_getAttrib(s, R_DimSymbol);
+  const int nd = static_cast<int>(dims.size());
+  if (Rf_length(dim) != nd) [[unlikely]] {
+    ass(false, std::string("'") + arg + "' has " + std::to_string(Rf_length(dim)) +
+                 " dimensions, layout " + type_name + " expects " + std::to_string(nd));
+  }
+  SEXP dimnames = Rf_getAttrib(s, R_DimNamesSymbol);
+  int k = 0;
+  for (const auto& names : dims) {
+    const int n = static_cast<int>(names.size());
+    const int len = INTEGER(dim)[k];
+    if (len < n) [[unlikely]] {
+      ass(false, std::string("Dimension ") + std::to_string(k + 1) + " of '" + arg +
+                   "' does not match layout " + type_name + ": expected at least " +
+                   std::to_string(n) + ", got " + std::to_string(len));
+    }
+    SEXP r_names = dimnames == R_NilValue ? R_NilValue : VECTOR_ELT(dimnames, k);
+    if (n > 0 && r_names != R_NilValue) {
+      int i = 0;
+      for (const char* expected : names) {
+        const char* found = CHAR(STRING_ELT(r_names, i));
+        if (std::strcmp(found, expected) != 0) [[unlikely]] {
+          ass(false, std::string("Dimnames of '") + arg + "' do not match layout " + type_name +
+                       ": dimension " + std::to_string(k + 1) + ", position " + std::to_string(i + 1) +
+                       " is '" + found + "', expected '" + expected + "'");
+        }
+        ++i;
+      }
+    }
+    ++k;
+  }
+}
+
+// named_mat / named_array return values: dimnames attached; entries beyond the
+// names get "", dimensions without names get NULL
+inline SEXP AttachDimNames(SEXP s, std::initializer_list<std::initializer_list<const char*>> dims) {
+  if (MAYBE_REFERENCED(s)) s = Rf_duplicate(s);
+  PROTECT(s);
+  SEXP dim = Rf_getAttrib(s, R_DimSymbol);
+  const int nd = static_cast<int>(dims.size());
+  if (Rf_length(dim) != nd) {
+    UNPROTECT(1);
+    return s;
+  }
+  SEXP dimnames = PROTECT(Rf_allocVector(VECSXP, nd));
+  int k = 0;
+  for (const auto& names : dims) {
+    if (names.size() > 0) {
+      const int len = INTEGER(dim)[k];
+      SEXP r_names = PROTECT(Rf_allocVector(STRSXP, len));
+      int i = 0;
+      for (const char* name : names) {
+        if (i >= len) break;
+        SET_STRING_ELT(r_names, i++, Rf_mkChar(name));
+      }
+      for (; i < len; ++i) SET_STRING_ELT(r_names, i, R_BlankString);
+      SET_VECTOR_ELT(dimnames, k, r_names);
+      UNPROTECT(1);
+    }
+    ++k;
+  }
+  Rf_setAttrib(s, R_DimNamesSymbol, dimnames);
+  UNPROTECT(2);
+  return s;
+}
+
 // Cast scalar elements to their SEXP equivalents
 // -----------------------------------------------------------------------------------------------------------
-inline int to_R(Integer x)  { return isNA(x) ? NA_INTEGER : get_val(x); }
-inline int to_R(Logical x)  { return isNA(x) ? NA_LOGICAL : (get_val(x) ? 1 : 0); }
-inline double to_R(Double x){ return isNA(x) ? NA_REAL : get_val(x); }
-inline double to_R(Dual x)  { return isNA(x) ? NA_REAL : get_val(x); }
-inline double to_R(ReverseDouble x){ return isNA(x) ? NA_REAL : get_val(x); }
+// member isNA(): the free isNA() is is.na() and also TRUE for NaN
+inline int to_R(Integer x)  { return x.isNA() ? NA_INTEGER : get_val(x); }
+inline int to_R(Logical x)  { return x.isNA() ? NA_LOGICAL : (get_val(x) ? 1 : 0); }
+inline double to_R(Double x){ return x.isNA() ? NA_REAL : get_val(x); }
+inline double to_R(Dual x)  { return x.isNA() ? NA_REAL : get_val(x); }
+inline double to_R(ReverseDouble x){ return x.isNA() ? NA_REAL : get_val(x); }
 
 inline SEXP Cast() { return R_NilValue; }
 inline SEXP Cast(Integer res) { return Rf_ScalarInteger(to_R(res)); }
@@ -156,36 +277,36 @@ inline SEXP Cast(const char *res) { return Rf_mkString(res); }
 // struct's declared slot order.
 // -----------------------------------------------------------------------------------------------------------
 inline SEXP checked_elt(SEXP arg, const char* field_name, int expected_length, const char* expected_class) {
+  const std::string cls_name(expected_class);
   SEXP cls = Rf_getAttrib(arg, R_ClassSymbol);
-  if (cls == R_NilValue || std::strcmp(CHAR(STRING_ELT(cls, 0)), expected_class) != 0) {
-    Rf_error("Expected an object of class '%s'", expected_class);
-  }
-  if (Rf_length(arg) != expected_length) {
-    Rf_error("Expected an object of class '%s' with %d fields, but got %d", expected_class, expected_length, (int)Rf_length(arg));
-  }
+  ass(cls != R_NilValue && std::strcmp(CHAR(STRING_ELT(cls, 0)), expected_class) == 0,
+      "Expected an object of class '" + cls_name + "'");
+  ass(Rf_length(arg) == expected_length,
+      "Expected an object of class '" + cls_name + "' with " + std::to_string(expected_length) +
+      " fields, but got " + std::to_string(Rf_length(arg)));
   SEXP names = Rf_getAttrib(arg, R_NamesSymbol);
-  if (names == R_NilValue) {
-    Rf_error("Expected a named list for class '%s'", expected_class);
-  }
+  ass(names != R_NilValue, "Expected a named list for class '" + cls_name + "'");
   int n = Rf_length(names);
   for (int i = 0; i < n; i++) {
     if (std::strcmp(CHAR(STRING_ELT(names, i)), field_name) == 0) {
       return VECTOR_ELT(arg, i);
     }
   }
-  Rf_error("Expected an object of class '%s' to have a field named '%s'", expected_class, field_name);
+  ass(false, "Expected an object of class '" + cls_name + "' to have a field named '" + field_name + "'");
+  return R_NilValue;
 }
 
 // Cast Array
 // -----------------------------------------------------------------------------------------------------------
-inline void set_dim_attrib(SEXP x, const std::vector<std::size_t>& dim) {
+inline void set_dim_attrib(SEXP x, const Dim& dim) {
   if (dim.empty()) return;           // no dim => plain vector
   if (dim.size() == 1) return;       // 1D dim => leave as a plain R vector, not a 1D array
+  // R stores dims as int
+  for (std::size_t d : dim) {
+    ass<"Dimension too large for R integer dim.">(d <= (std::size_t)std::numeric_limits<int>::max());
+  }
   SEXP dimS = PROTECT(Rf_allocVector(INTSXP, dim.size()));
   for (R_xlen_t i = 0; i < (R_xlen_t)dim.size(); ++i) {
-    // be safe: R stores dims as int
-    if (dim[i] > (std::size_t)std::numeric_limits<int>::max())
-      Rf_error("Dimension too large for R integer dim.");
     INTEGER(dimS)[i] = static_cast<int>(dim[i]);
   }
   Rf_setAttrib(x, R_DimSymbol, dimS);
@@ -202,9 +323,9 @@ inline void set_dimnames_attrib(SEXP x, SEXP dimnames /* must be a VECSXP of len
 // magnitude faster than the scalar loop for large arrays.
 //
 // Storage layout we exploit:
-//   Buffer<T,LBufferTrait> / Buffer<T,RBufferTrait>  → SoA: p_val, p_na
-//   Borrow<T,BorrowTrait>                            → p,     p_na (shared_ptr)
-//   Buffer<Dual,*>  is always SoA: p_val, p_dot, p_na, p_na_dot
+//   Buffer<T,LBufferTrait> / Buffer<T,RBufferTrait>  → p_val (NA is R's sentinel)
+//   Borrow<T,BorrowTrait>                            → p
+//   Buffer<Dual,*>  is always SoA: p_val, p_dot
 //   ReverseDouble has no contiguous double buffer (each handle's value lives
 //   on the tape), so it stays on the per-element path.
 template <typename A>
@@ -212,16 +333,11 @@ inline auto cast_value_ptr(const A& a) {
   if constexpr (IsBorrowArray<Decayed<A>>) return a.d.p;
   else                                      return a.d.p_val;
 }
-template <typename A>
-inline auto cast_na_ptr(const A& a) {
-  if constexpr (IsBorrowArray<Decayed<A>>) return a.d.p_na.get();
-  else                                      return a.d.p_na;
-}
 
 template <typename T>
 requires IsArray<Decayed<T>>
 inline SEXP Cast(const T &res_) {
-  auto res = Evaluate(res_);
+  const auto& res = Evaluate(res_);
   const auto dim = dim_view(res.get_dim());
   using vtype = typename ExtractDataType<Decayed<decltype(res)>>::value_type;
   const R_xlen_t N = static_cast<R_xlen_t>(res.size());
@@ -230,12 +346,8 @@ inline SEXP Cast(const T &res_) {
     SEXP ret = PROTECT(Rf_allocVector(REALSXP, N));
     double*       dst = REAL(ret);
     const double* src = cast_value_ptr(res);
-    const bool*   na  = cast_na_ptr(res);
     // src is null for an empty result; memcpy(_, null, 0) is UB (nonnull args)
     if (N > 0) std::memcpy(dst, src, static_cast<std::size_t>(N) * sizeof(double));
-    if (na) {
-      for (R_xlen_t i = 0; i < N; ++i) if (na[i]) dst[i] = NA_REAL;
-    }
     set_dim_attrib(ret, dim);
     UNPROTECT(1);
     return ret;
@@ -246,11 +358,7 @@ inline SEXP Cast(const T &res_) {
     SEXP ret = PROTECT(Rf_allocVector(REALSXP, N));
     double*       dst = REAL(ret);
     const double* src = res.d.p_val;
-    const bool*   na  = res.d.p_na;
     if (N > 0) std::memcpy(dst, src, static_cast<std::size_t>(N) * sizeof(double));
-    if (na) {
-      for (R_xlen_t i = 0; i < N; ++i) if (na[i]) dst[i] = NA_REAL;
-    }
     set_dim_attrib(ret, dim);
     UNPROTECT(1);
     return ret;
@@ -270,26 +378,17 @@ inline SEXP Cast(const T &res_) {
     SEXP ret = PROTECT(Rf_allocVector(INTSXP, N));
     int*        dst = INTEGER(ret);
     const int*  src = cast_value_ptr(res);
-    const bool* na  = cast_na_ptr(res);
     if (N > 0) std::memcpy(dst, src, static_cast<std::size_t>(N) * sizeof(int));
-    if (na) {
-      for (R_xlen_t i = 0; i < N; ++i) if (na[i]) dst[i] = NA_INTEGER;
-    }
     set_dim_attrib(ret, dim);
     UNPROTECT(1);
     return ret;
   }
   else if constexpr (IsLogical<vtype>) {
-    // R stores logicals as int (LGLSXP is INTSXP under the hood). Source is
-    // bool*; widen with a tight loop the compiler will vectorize.
+    // same int layout as R's LGLSXP
     SEXP ret = PROTECT(Rf_allocVector(LGLSXP, N));
-    int*        dst = LOGICAL(ret);
-    const bool* src = cast_value_ptr(res);
-    const bool* na  = cast_na_ptr(res);
-    for (R_xlen_t i = 0; i < N; ++i) dst[i] = src[i] ? 1 : 0;
-    if (na) {
-      for (R_xlen_t i = 0; i < N; ++i) if (na[i]) dst[i] = NA_LOGICAL;
-    }
+    int*       dst = LOGICAL(ret);
+    const int* src = cast_value_ptr(res);
+    if (N > 0) std::memcpy(dst, src, static_cast<std::size_t>(N) * sizeof(int));
     set_dim_attrib(ret, dim);
     UNPROTECT(1);
     return ret;

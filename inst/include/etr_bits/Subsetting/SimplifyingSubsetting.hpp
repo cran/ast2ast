@@ -32,11 +32,49 @@ inline size_t ExtractIndex(const T& obj) {
   }
 }
 
+// N = 2..4 covers matrix/cube/hypercube directly, no stride array needed;
+// only rank >= 5 falls back to the general stride loop.
+template<std::size_t N>
+inline std::size_t index_from_dims(const std::array<std::size_t, N>& indices,
+                                    const Dim& dim) {
+  // a single index walks the column-major flattening (R's m[i]); it isn't
+  // tied to one axis, so the per-dimension rank/bounds checks below don't apply
+  if constexpr (N == 1) {
+    return indices[0];
+  }
+  if (N > dim.size()) {
+    ass<"Too many index arguments for array rank">(false);
+  }
+  if (N < dim.size()) {
+    ass<"Too less index arguments for array rank">(false);
+  }
+  // each index must be checked against its own dimension's extent; checking
+  // only the linearized offset against the buffer size lets an overshoot in
+  // a non-final dimension fold into a later dimension and silently alias
+  // the wrong cell (e.g. M[3,1] on a 2x2 landing on M[1,2]).
+  for (std::size_t i = 0; i < N; i++) {
+    ass<"Error: out of boundaries">(indices[i] < dim[i]);
+  }
+  if constexpr (N == 2) {
+    return indices[0] + indices[1] * dim[0];
+  } else if constexpr (N == 3) {
+    return indices[0] + indices[1] * dim[0] + indices[2] * dim[0] * dim[1];
+  } else if constexpr (N == 4) {
+    return indices[0] + indices[1] * dim[0] + indices[2] * dim[0] * dim[1]
+         + indices[3] * dim[0] * dim[1] * dim[2];
+  } else {
+    auto stride = make_strides_from_vec<N>(dim);
+    std::size_t idx = 0;
+    for (std::size_t i = 0; i < N; i++) idx += indices[i] * stride[i];
+    return idx;
+  }
+}
+
 // direct access vector memory if possible.
 // -----------------------------------------------------------------------------------------------------------
 template <typename ArrayType, typename... Args>
 requires (IsLBufferArray<ArrayType> || IsBorrowArray<ArrayType>)
-inline decltype(auto) at(ArrayType& arr, const Args&... args) {
+[[gnu::always_inline]] inline decltype(auto) at(ArrayType& arr, const Args&... args) {
   constexpr std::size_t N = sizeof...(Args);
   const auto& dim = dim_view(arr.get_dim());
 
@@ -49,29 +87,7 @@ inline decltype(auto) at(ArrayType& arr, const Args&... args) {
     args...
   );
 
-  std::size_t idx = 0;
-  if constexpr (N == 1) {
-    // a single index walks the column-major flattening (R's m[i]); stride is 1
-    idx = indices[0];
-  } else {
-    if (N > dim.size()) {
-      ass<"Too many index arguments for array rank">(false);
-    }
-    if (N < dim.size()) {
-      ass<"Too less index arguments for array rank">(false);
-    }
-    // each index must be checked against its own dimension's extent; checking
-    // only the linearized offset against the buffer size lets an overshoot in
-    // a non-final dimension fold into a later dimension and silently alias
-    // the wrong cell (e.g. M[3,1] on a 2x2 landing on M[1,2]).
-    for (std::size_t i = 0; i < N; i++) {
-      ass<"Error: out of boundaries">(indices[i] < dim[i]);
-    }
-    auto stride = make_strides_from_vec<N>(dim);
-    for (std::size_t i = 0; i < N; i++) {
-      idx += indices[i] * stride[i];
-    }
-  }
+  std::size_t idx = index_from_dims<N>(indices, dim);
 
   ass<"No memory was allocated">(arr.d.allocated);
   ass<"Error: out of boundaries">(idx < arr.d.size());
@@ -83,22 +99,16 @@ inline decltype(auto) at(ArrayType& arr, const Args&... args) {
   if constexpr (IsReverseDouble<DataType>) {
     return arr.d.get(idx);
   } else if constexpr (IsDouble<DataType>) {
-    if constexpr (IsBuf) return DoubleRef{ &arr.d.p_val[idx], &arr.d.p_na[idx] };
-    else                 return DoubleRef{ &arr.d.p[idx], arr.d.p_na ? &arr.d.p_na[idx] : nullptr };
+    if constexpr (IsBuf) return DoubleRef{ &arr.d.p_val[idx] };
+    else                 return DoubleRef{ &arr.d.p[idx] };
   } else if constexpr (IsInteger<DataType>) {
-    if constexpr (IsBuf) return IntegerRef{ &arr.d.p_val[idx], &arr.d.p_na[idx] };
-    else                 return IntegerRef{ &arr.d.p[idx], arr.d.p_na ? &arr.d.p_na[idx] : nullptr };
+    if constexpr (IsBuf) return IntegerRef{ &arr.d.p_val[idx] };
+    else                 return IntegerRef{ &arr.d.p[idx] };
   } else if constexpr (IsLogical<DataType>) {
-    if constexpr (IsBuf) return LogicalRef{ &arr.d.p_val[idx], &arr.d.p_na[idx] };
-    else                 return LogicalRef{ &arr.d.p[idx], arr.d.p_na ? &arr.d.p_na[idx] : nullptr };
+    if constexpr (IsBuf) return LogicalRef{ &arr.d.p_val[idx] };
+    else                 return LogicalRef{ &arr.d.p[idx] };
   } else if constexpr (IsDual<DataType>) {
-    if constexpr (IsBuf)
-      return DualRef{ &arr.d.p_val[idx], &arr.d.p_dot[idx],
-                      &arr.d.p_na[idx],  &arr.d.p_na_dot[idx] };
-    else
-      return DualRef{ &arr.d.p_val[idx], &arr.d.p_dot[idx],
-                      arr.d.p_na     ? &arr.d.p_na[idx]     : nullptr,
-                      arr.d.p_na_dot ? &arr.d.p_na_dot[idx] : nullptr };
+    return DualRef{ &arr.d.p_val[idx], &arr.d.p_dot[idx] };
   } else {
     ass<"Borrow/Buffer at(): unsupported datatype">(false);
     return DoubleRef{nullptr};
@@ -121,22 +131,16 @@ inline decltype(auto) at_linear(Obj& obj, std::size_t idx) {
     if constexpr (IsReverseDouble<DataType>) {
       return obj.get(idx);
     } else if constexpr (IsDouble<DataType>) {
-      if constexpr (IsBuf) return DoubleRef{ &obj.p_val[idx], &obj.p_na[idx] };
-      else                 return DoubleRef{ &obj.p[idx], obj.p_na ? &obj.p_na[idx] : nullptr };
+      if constexpr (IsBuf) return DoubleRef{ &obj.p_val[idx] };
+      else                 return DoubleRef{ &obj.p[idx] };
     } else if constexpr (IsInteger<DataType>) {
-      if constexpr (IsBuf) return IntegerRef{ &obj.p_val[idx], &obj.p_na[idx] };
-      else                 return IntegerRef{ &obj.p[idx], obj.p_na ? &obj.p_na[idx] : nullptr };
+      if constexpr (IsBuf) return IntegerRef{ &obj.p_val[idx] };
+      else                 return IntegerRef{ &obj.p[idx] };
     } else if constexpr (IsLogical<DataType>) {
-      if constexpr (IsBuf) return LogicalRef{ &obj.p_val[idx], &obj.p_na[idx] };
-      else                 return LogicalRef{ &obj.p[idx], obj.p_na ? &obj.p_na[idx] : nullptr };
+      if constexpr (IsBuf) return LogicalRef{ &obj.p_val[idx] };
+      else                 return LogicalRef{ &obj.p[idx] };
     } else if constexpr (IsDual<DataType>) {
-      if constexpr (IsBuf)
-        return DualRef{ &obj.p_val[idx], &obj.p_dot[idx],
-                        &obj.p_na[idx],  &obj.p_na_dot[idx] };
-      else
-        return DualRef{ &obj.p_val[idx], &obj.p_dot[idx],
-                        obj.p_na     ? &obj.p_na[idx]     : nullptr,
-                        obj.p_na_dot ? &obj.p_na_dot[idx] : nullptr };
+      return DualRef{ &obj.p_val[idx], &obj.p_dot[idx] };
     } else {
       ass<"at_linear(): unsupported datatype">(false);
       return DoubleRef{nullptr};
@@ -163,22 +167,7 @@ inline decltype(auto) at(ArrayType&& arr, const Args&... args) {
     args...
   );
 
-  std::size_t idx = 0;
-  if constexpr (N == 1) {
-    idx = indices[0];
-  } else {
-    if (N != dim.size()) {
-      if (N > dim.size()) ass<"Too many index arguments for array rank">(false);
-      else               ass<"Too less index arguments for array rank">(false);
-    }
-    for (std::size_t i = 0; i < N; i++) {
-      ass<"Error: out of boundaries">(indices[i] < dim[i]);
-    }
-    auto stride = make_strides_from_vec<N>(dim);
-    for (std::size_t i = 0; i < N; i++) {
-      idx += indices[i] * stride[i];
-    }
-  }
+  std::size_t idx = index_from_dims<N>(indices, dim);
 
   ass<"Error: out of boundaries">(idx < arr.d.size());
   return at_linear(arr.d, idx);
@@ -198,24 +187,9 @@ inline const auto at(const ArrayType& arr, const Args&... args) {
     args...
   );
 
-  std::size_t idx = 0;
+  std::size_t idx = index_from_dims<N>(indices, dim);
   if constexpr (N == 1) {
-    idx = indices[0];
     ass<"Error: out of boundaries">(idx < arr.size());
-  } else {
-    if (N > dim.size()) {
-      ass<"Too many index arguments for array rank">(false);
-    }
-    if (N < dim.size()) {
-      ass<"Too less index arguments for array rank">(false);
-    }
-    for (std::size_t i = 0; i < N; i++) {
-      ass<"Error: out of boundaries">(indices[i] < dim[i]);
-    }
-    auto stride = make_strides_from_vec<N>(dim);
-    for (std::size_t i = 0; i < N; i++) {
-      idx += indices[i] * stride[i];
-    }
   }
   return arr.get(idx);
 }

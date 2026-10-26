@@ -23,7 +23,7 @@ check_input_args <- function(variables) {
   for (i in seq_along(variables)) {
     if (!is.null(variables[[i]]$type$error)) {
       lapply(variables[[i]]$type$error, print)
-      stop()
+      stop(, call. = FALSE)
     }
   }
 }
@@ -51,15 +51,7 @@ non_fct_args <- function(ast, f, r_fct) {
 create_vars_types_list <- function(ast, f, f_args, r_fct, real_type, known_types = list()) {
   input_args <- resolve_args_f(f, f_args)
   input_args <- parse_types(input_args, fct_input = TRUE, r_fct, real_type, known_types)
-  wrong_input <- FALSE
-  for (i in seq_len(length(input_args))) {
-    e <- input_args[[i]]$error
-    if (!is.null(e) && e != "") {
-      print(sprintf("%s, for variable: %s", input_args[[i]]$error, input_args[[i]]$get_name()))
-      wrong_input <- TRUE
-    }
-  }
-  if (wrong_input) stop("Types for arguments are invalid")
+  stop_on_type_errors(input_args)
 
   check_orphan_type_annotations(ast, names(formals(f)))
 
@@ -97,7 +89,7 @@ check_orphan_type_annotations <- function(ast, arguments) {
     stop(sprintf(
       "type() annotation for %s, which is never used as a variable",
       paste(sprintf("'%s'", orphans), collapse = ", ")
-    ))
+    ), call. = FALSE)
   }
   invisible()
 }
@@ -218,7 +210,7 @@ common_type <- function(type_old, type_new) {
 
   if (is.null(type_old$get_base_type()) && is.null(type_old$get_data_struct())) {
     type_old$set_base_type(type_new$get_base_type())
-    type_old$set_data_struct(type_new$get_data_struct())
+    type_old$set_data_struct(if (is_range_type(type_new)) "range" else type_new$get_data_struct())
     return(type_old)
   }
 
@@ -248,6 +240,10 @@ common_type <- function(type_old, type_new) {
   } else {
     common_data_struct <- type_new$get_data_struct()
   }
+  # range only survives a join with another range (range_type.md)
+  if (is_range_type(type_old) && is_range_type(type_new)) {
+    return(type_old)
+  }
   type_old$set_base_type(common_base_type)
   type_old$set_data_struct(common_data_struct)
   return(type_old)
@@ -273,7 +269,7 @@ void_only_operator <- function(operator) {
   operator %in% c("print", "seed", "unseed", "stop")
 }
 
-warn_if_type_widened <- function(variable, old_type, new_type) {
+warn_if_type_widened <- function(variable, old_type, new_type, rhs_type = NULL) {
   if (!inherits(old_type, "pre_type_node") || !inherits(new_type, "pre_type_node")) {
     return()
   }
@@ -284,6 +280,18 @@ warn_if_type_widened <- function(variable, old_type, new_type) {
       "Promoted the type of variable %s from %s %s to %s %s",
       variable, old_type$get_data_struct(), old_type$get_base_type(),
       new_type$get_data_struct(), new_type$get_base_type()
+    ), call. = FALSE)
+    return()
+  }
+  # NOTE: y <- 1.5; y <- TRUE: y stays double, so nothing is promoted, but R would return TRUE
+  if (!inherits(rhs_type, "pre_type_node")) return()
+  rhs_base <- rhs_type$get_base_type()
+  if (is.null(rhs_base) || !(rhs_base %in% c("logical", "bool", "integer", "int", "double"))) return()
+  if (!same_base_type(rhs_base, new_type$get_base_type())) {
+    warning(sprintf(
+      "Variable %s is %s %s; the %s value assigned here is converted to %s",
+      variable, new_type$get_data_struct(), new_type$get_base_type(),
+      rhs_base, new_type$get_base_type()
     ), call. = FALSE)
   }
 }
@@ -296,6 +304,19 @@ warn_if_type_widened_by_subsetting <- function(variable, old_data_struct, new_da
       variable, old_data_struct, new_data_struct
     ), call. = FALSE
   )
+}
+
+# a variable keeps its layout when common_type() rebuilds its type
+keep_layout <- function(old_type, new_type) {
+  layout <- layout_of(old_type)
+  if (is.null(layout) || !inherits(new_type, "pre_type_node") ||
+      !inherits(new_type$data_struct, layout_holders) || !is.null(new_type$data_struct$layout) ||
+      new_type$get_data_struct() != layout$kind) {
+    return(new_type)
+  }
+  new_type <- new_type$clone(deep = TRUE)
+  new_type$data_struct$layout <- layout
+  new_type
 }
 
 type_infer_assignment <- function(node, info_env) {
@@ -321,7 +342,13 @@ type_infer_assignment <- function(node, info_env) {
     else {
       variable <- find_var_lhs(node)
 
-      if (inherits(info_env$vars_list[[variable]], "unknown_type")) {
+      if (inherits(type, "fn_node") && !inherits(node$right_node, "fn_node")) {
+        node$error <- sprintf(
+          "Cannot assign the function %s to the variable %s: functions can only be assigned when defined (%s <- fn(...))",
+          node$right_node$stringify(), variable, variable
+        )
+      }
+      else if (inherits(info_env$vars_list[[variable]], "unknown_type")) {
         if (inherits(type, "fn_node")) {
           type$fct_name <- variable
         }
@@ -332,7 +359,9 @@ type_infer_assignment <- function(node, info_env) {
           type$set_fct_input(FALSE)
           type$set_iterator(FALSE) # Dont propagate iterator
           if (grepl("borrow", type$get_data_struct_verbose())) { # a new local var cannot itself be borrow-typed
+            layout <- layout_of(type)
             type$set_data_struct(type$get_data_struct())
+            if (!is.null(layout)) type$data_struct$layout <- layout
           }
           type$set_name(variable)
         }
@@ -353,7 +382,7 @@ type_infer_assignment <- function(node, info_env) {
           if (inherits(type, "fn_node")) {
             old_type <-info_env$vars_list[[variable]]
             stop(sprintf("You cannot reassign a function to the variable %s, that was previously declared as %s of type %s",
-              old_type$get_name(), old_type$get_data_struct(), old_type$get_base_type()))
+              old_type$get_name(), old_type$get_data_struct(), old_type$get_base_type()), call. = FALSE)
           }
           detected_type <- common_type(info_env$vars_list[[variable]], type)
           if (is.character(detected_type)) {
@@ -361,9 +390,10 @@ type_infer_assignment <- function(node, info_env) {
           } else {
             detected_type <- detected_type |> flatten_type()
             detected_type <- detected_type$clone()
+            detected_type <- keep_layout(info_env$vars_list[[variable]], detected_type)
             detected_type$set_iterator(FALSE) # Don't propagate iterator
             detected_type$set_name(variable)
-            warn_if_type_widened(variable, info_env$vars_list[[variable]], detected_type)
+            warn_if_type_widened(variable, info_env$vars_list[[variable]], detected_type, type)
             info_env$vars_list[[variable]] <- detected_type
           }
         }
@@ -400,6 +430,7 @@ type_infer_assignment <- function(node, info_env) {
               node$error <- detected_type
             } else {
               detected_type <- detected_type |> flatten_type()
+              detected_type <- keep_layout(info_env$vars_list[[variable]], detected_type)
               detected_type$set_name(variable)
               warn_if_type_widened(variable, info_env$vars_list[[variable]], detected_type)
               info_env$vars_list[[variable]] <- detected_type
@@ -618,6 +649,11 @@ type_infer_action <- function(node, info_env) {
     if (inherits(obj_type, "fn_node")) {
       node$error <- sprintf("Cannot use an inner function as an argument to '%s'", node$operator)
     }
+    # e.g. print(b) with b never assigned: print's own infer_fct doesn't look at
+    # its argument's type, so this is the only place that sees the error
+    else if (is.null(node$error) && is.character(obj_type) && inherits(node$obj, "variable_node")) {
+      node$error <- obj_type
+    }
   }
   else if (inherits(node, "nullary_node")) {
     infer(node, info_env$vars_list, info_env, info_env$function_registry)
@@ -627,31 +663,42 @@ type_infer_action <- function(node, info_env) {
     if (is.character(type) && !void_only_operator(node$operator)) {
       node$error <- type
     }
-    lapply(node$args, function(arg) {
-      infer(arg, info_env$vars_list, info_env, info_env$function_registry)
-    })
+    for (arg in node$args) {
+      arg_type <- infer(arg, info_env$vars_list, info_env, info_env$function_registry)
+      if (is.null(node$error) && is.character(arg_type)) {
+        node$error <- arg_type
+      }
+    }
     type_infer_function_subsetting(node, info_env)
   }
 
   isTRUE(handled)
 }
 
+uninitialized_msg <- function(name) {
+  sprintf(paste0(
+    "Found uninitialized variable: %s\n",
+    "%s is never assigned inside the function. Variables from the enclosing environment ",
+    "are not captured; pass %s as an argument."
+  ), name, name, name)
+}
+
 are_vars_init <- function(type, name = "") {
   if (!inherits(type, "unknown_type")) {
     return(NULL)
   }
-  sprintf("Found uninitialized variable: %s", name)
+  uninitialized_msg(name)
 }
 
 type_list_checks <- function(l) {
   lapply(names(l), function(name) {
     var <- l[[name]]
     if (inherits(var, "unknown_type")) {
-      stop(sprintf("Found uninitialized variable: %s", name))
+      stop(uninitialized_msg(name), call. = FALSE)
     }
     else if (inherits(var, "pre_type_node")) {
       if (any(var$get_base_type() == c("NA", "NaN", "Inf"))) {
-        stop(sprintf("Found unallowed base type %s, for the variable %s", var$get_base_type(), var$get_name()))
+        stop(sprintf("Found unallowed base type %s, for the variable %s", var$get_base_type(), var$get_name()), call. = FALSE)
       }
     }
   })

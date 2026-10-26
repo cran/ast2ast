@@ -8,10 +8,17 @@ variable_node <- R6::R6Class(
     initialized = FALSE,
     field_name = FALSE,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
+    # a named fn used as value (map(g, x)): its functor object
+    cpp_override = NULL,
+    # scalar type of that functor, NULL -> the translation's
+    functor_scalar = NULL,
     initialize = function(obj) {
       self$name <- obj
     },
     stringify = function(indent = "") {
+      if (!is.null(self$cpp_override)) return(paste0(indent, self$cpp_override))
       return(paste0(indent, self$name))
     },
     stringify_condition = function(indent = "") {
@@ -37,6 +44,8 @@ literal_node <- R6::R6Class(
     wrap = FALSE,
     real_type = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function(obj) {
       self$literal_type <- determine_literal_type(obj)
       self$name <- deparse(obj)
@@ -117,7 +126,10 @@ binary_node <- R6::R6Class(
     remove_type_decl = FALSE,
     type = NULL,
     is_infix = NULL,
+    call_arg_names = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function() {},
     string_left = function() {
       return(self$left_node$stringify())
@@ -158,6 +170,25 @@ binary_node <- R6::R6Class(
         ")"
       )
     },
+    # `arr[idx...] <- rhs`. By this point action_translate has already
+    # rewritten "[" to its cpp_name ("etr::subset"), and arity decides the
+    # left_node's shape: a single index is a binary_node (left_node/
+    # right_node), two or more is a function_node (args[[1]] is the array,
+    # args[-1] the indices) -- see create_ast in CreateNodeAST.R.
+    create_subset_assign_string = function(indent = "") {
+      left <- self$left_node
+      if (inherits(left, "function_node")) {
+        arr_str <- left$args[[1]]$stringify()
+        idx_strs <- vapply(left$args[-1], function(a) a$stringify(), character(1))
+      } else {
+        arr_str <- left$left_node$stringify()
+        idx_strs <- left$right_node$stringify()
+      }
+      paste0(
+        indent, "etr::subset_assign(", arr_str, ", ", self$right_node$stringify(), ", ",
+        paste(idx_strs, collapse = ", "), ")"
+      )
+    },
     stringify = function(indent = "") {
       ret <- ""
       if (self$operator == "type" && self$remove_type_decl) {
@@ -167,6 +198,10 @@ binary_node <- R6::R6Class(
         ret <- paste0(indent, self$string_left())
       } else if (self$operator %in% c("<-", "=") && inherits(self$right_node, "fn_node")) {
         return(self$create_infix_string(indent))
+      } else if (self$operator %in% c("<-", "=") &&
+                 inherits(self$left_node, c("binary_node", "function_node")) &&
+                 self$left_node$operator == "etr::subset") {
+        ret <- self$create_subset_assign_string(indent)
       } else if (self$operator %in% c("[", "[[")) {
         ret <- self$create_r_subsetting_string(indent)
       } else if (self$is_infix && !(self$operator %in% not_infix_in_cpp)) {
@@ -179,7 +214,7 @@ binary_node <- R6::R6Class(
           self$operator, " ",
           self$string_left(),
           " ", self$string_right()
-        ))
+        ), call. = FALSE)
       }
       if (self$context == "Start") {
         ret <- paste0(ret, ";")
@@ -248,7 +283,10 @@ unary_node <- R6::R6Class(
     internal_type = NULL,
     handle_return = FALSE,
     output_is_r_fct = TRUE,
+    call_arg_names = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function() {},
     string_obj = function() {
       return(self$obj$stringify())
@@ -272,6 +310,13 @@ unary_node <- R6::R6Class(
               indent, self$operator, "(",
               self$string_obj(), ".to_SEXP())"
             )
+            layout <- layout_of(self$obj$internal_type)
+            if (!is.null(layout)) {
+              ret <- paste0(
+                indent, self$operator, "(etr::AttachNames(", self$string_obj(), ".to_SEXP(), ",
+                cpp_string_list(layout$names), "))"
+              )
+            }
           } else if (needs_to_SEXP_path(self$obj$internal_type)) {
             ret <- paste0(
               indent, self$operator, "(",
@@ -283,6 +328,18 @@ unary_node <- R6::R6Class(
               # This cast to SEXP and evals expressions which are not variables or literals
               self$string_obj(), "))"
             )
+            layout <- layout_of(self$obj$internal_type)
+            if (!is.null(layout) && layout$kind %in% c("matrix", "array")) {
+              ret <- paste0(
+                indent, self$operator, "(etr::AttachDimNames(etr::Cast(", self$string_obj(), "), ",
+                cpp_dimnames_list(layout$dimnames), "))"
+              )
+            } else if (!is.null(layout)) {
+              ret <- paste0(
+                indent, self$operator, "(etr::AttachNames(etr::Cast(", self$string_obj(), "), ",
+                cpp_string_list(layout$names), "))"
+              )
+            }
           } else {
             ret <- paste0(
               indent, self$operator, "(etr::Evaluate(", self$string_obj(), "))"
@@ -334,6 +391,8 @@ nullary_node <- R6::R6Class(
     handle_return = FALSE,
     output_is_r_fct = TRUE,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function() {},
     stringify_condition = function(indent = "") {
       paste0(indent, "static_cast<bool>(", self$stringify(""), ")")
@@ -379,7 +438,10 @@ function_node <- R6::R6Class(
     context = NULL,
     internal_type = NULL,
     args = list(),
+    call_arg_names = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function() {},
     create_r_subsetting_string = function(indent = "", obj_string, args_string) {
       if (self$operator == "[") {
@@ -447,6 +509,8 @@ if_node <- R6::R6Class(
     context = NULL,
     internal_type = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
 
     initialize = function() {},
     string_condition = function(indent) {
@@ -626,6 +690,16 @@ block_node <- R6::R6Class(
     stringify = function(indent = "") {
       result <- list()
       for (stmt in self$block) {
+        # g <- fn(...): emitted as functor at namespace level (define_functors)
+        if (inherits(stmt, "binary_node") && stmt$operator %in% c("<-", "=") &&
+            inherits(stmt$right_node, "fn_node")) {
+          next
+        }
+        # NOTE: only the pure declaration x |> type(T); x |> type(T) <- v is a `<-` node.
+        # x is already declared at the top of the fn, emitting it would give "x;"
+        if (inherits(stmt, "binary_node") && stmt$operator == "type") {
+          next
+        }
         end <- ";"
         s <- stmt$stringify(indent = indent)
         if (inherits(stmt, c("repeat_node", "fn_node"))) {
@@ -687,6 +761,8 @@ for_node <- R6::R6Class(
     context = NULL,
     internal_type = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function() {},
     stringify = function(indent = "") {
       idx <- self$i$stringify("")
@@ -769,6 +845,8 @@ while_node <- R6::R6Class(
     context = NULL,
     internal_type = NULL,
     pre_translate_line = NULL,
+    location = NULL,
+    source_line = NULL,
     initialize = function() {},
     stringify = function(indent = "") {
       cond <- self$condition$stringify_condition(indent)
@@ -868,12 +946,16 @@ fn_node <- R6::R6Class(
     context = NULL,
 
     fct_name = NULL,
+    # named fn: C++ path of its functor, e.g. f_impl::g_t (NULL for inline fns)
+    cpp_path = NULL,
     known_fcts = NULL,
     args_f = NULL,
     args_f_raw = NULL,
     return_type = NULL,
     AST = NULL,
     parsed_AST = NULL,
+    # R body; AST becomes the node tree once transpiled
+    raw_body = NULL,
 
     real_type = NULL,
     vars_types_list = NULL,
@@ -891,63 +973,64 @@ fn_node <- R6::R6Class(
     signature = function(indent = "") {
       ""
     },
+    # named fns are hoisted functors (define_functors), no local variable
     declare = function(indent = "") {
-      self$stringify_declaration(indent = indent, r_fct = FALSE)
+      ""
     },
-    stringify_declaration = function(indent = "", r_fct) {
+
+    # args, return type, local declarations and body, shared by the lambda
+    # (inline fn) and the functor (named fn)
+    parts = function(indent = "") {
+      args <- ""
       if (length(self$vars_types_list) >= 1L) {
         args <- lapply(self$vars_types_list, \(x) x$signature()) |> unlist() |> c()
         args <- args[args != ""]
-        args <- paste0(args, collapse = ", ")
-      } else {
-        args <- ""
-      }
-      ret_type <- if (inherits(self$return_type, "new_type_node")) {
-        self$return_type$stringify("")
-      } else {
-        self$return_type$data_struct$stringify("")
-      }
-      paste0(indent, sprintf("std::function<%s(%s)>%s;\n", ret_type, args, self$fct_name))
-    },
-
-    stringify = function(indent = "") {
-      name <- self$fct_name
-      indent0 <- indent
-
-      if (length(self$vars_types_list) >= 1L) {
-        args <- lapply(self$vars_types_list, \(x) x$signature()) |> unlist() |> c()
-        args <- args[args != ""]
-      } else {
-        args <- ""
       }
       declarations <- lapply(self$vars_types_list, \(x) {
         res <- x$declare(indent = "")
+        if (res == "") return("")
         paste0(indent, "     ", res)
       }) |> unlist() |> c()
       declarations <- declarations[declarations != ""]
-      declarations <- paste0(declarations, collapse = "\n")
-
       ret_type <- if (inherits(self$return_type, "new_type_node")) {
         self$return_type$stringify("")
       } else {
         self$return_type$data_struct$stringify("")
       }
-
       body <- ""
       if (inherits(self$AST, "block_node")) {
         body <- self$AST$stringify(indent = paste0(indent, "    "))
       }
-      body <- paste0(body, collapse = "")
-      args <- paste0(args, collapse = ", ")
+      list(
+        args = paste0(args, collapse = ", "),
+        declarations = paste0(declarations, collapse = "\n"),
+        ret_type = ret_type,
+        body = paste0(body, collapse = "")
+      )
+    },
 
-      bracket_args <- paste0("&", self$known_fcts, collapse = ", ")
-      if (bracket_args == "&") bracket_args <- ""
-
+    # inline fn (map(fn(...), x)): lambda; it only uses other fns, which are
+    # functors -> nothing to capture by name
+    stringify = function(indent = "") {
+      p <- self$parts(indent)
       paste0(
-        paste0("[", bracket_args, "]( ", args, " ) -> ", ret_type, " {\n"),
-        indent, declarations, "\n",
-        body, "\n",
-        paste0(indent, "  }")
+        "[&]( ", p$args, " ) -> ", p$ret_type, " {\n",
+        indent, p$declarations, "\n",
+        p$body, "\n",
+        indent, "  }"
+      )
+    },
+
+    define_functor = function() {
+      p <- self$parts("")
+      paste0(
+        "template<typename ", SCALAR_CPP, ">\n",
+        "struct ", sub("^.*::", "", self$cpp_path), " {\n",
+        "  ", p$ret_type, " operator()( ", p$args, " ) const {\n",
+        p$declarations, "\n",
+        p$body, "\n",
+        "  }\n",
+        "};"
       )
     },
 
@@ -1087,6 +1170,7 @@ pre_type_node <- R6::R6Class(
       ds <- switch(data_struct,
         scalar = scalar$new(),
         vector = vec$new(),
+        range = range_vec$new(),
         matrix = mat$new(),
         array = arr$new()
       )
@@ -1114,9 +1198,29 @@ pre_type_node <- R6::R6Class(
       if (!self$r_fct && self$fct_input) return("")
       if (self$r_fct && self$fct_input) {
         type_str <- self$data_struct$stringify(indent)
-        return(paste0(
+        decl <- paste0(
           indent, type_str, " ", self$name,
           "(etr::CheckSEXP<", type_str, ">(", self$name, "SEXP, \"", self$name, "\"));"
+        )
+        layout <- layout_of(self)
+        if (!is.null(layout)) {
+          check <- if (layout$kind %in% c("matrix", "array")) {
+            paste0("etr::CheckDimNames(", self$name, "SEXP, \"", self$name, "\", \"",
+                   layout$name, "\", ", cpp_dimnames_list(layout$dimnames), ");")
+          } else {
+            paste0("etr::CheckNames(", self$name, "SEXP, \"", self$name, "\", \"",
+                   layout$name, "\", ", cpp_string_list(layout$names), ");")
+          }
+          decl <- paste0(decl, "\n  ", indent, check)
+        }
+        return(decl)
+      }
+      layout <- layout_of(self)
+      if (!is.null(layout) && layout$kind == "vector" && inherits(self$data_struct, "vec")) {
+        # the names give the length, so the declaration allocates (zeros)
+        return(paste0(
+          indent, self$data_struct$stringify(indent), " ", self$name, " = ",
+          layout_allocator(layout, self$real_type), "(etr::Integer(", length(layout$names), "));"
         ))
       }
       paste0(indent, self$data_struct$stringify(indent), " ", self$name, ";")
@@ -1189,6 +1293,7 @@ vec <- R6::R6Class(
     base_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("vector containing: %s", self$base_type), "\n")
     },
@@ -1217,6 +1322,7 @@ mat <- R6::R6Class(
     base_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("matrix containing: %s", self$base_type), "\n")
     },
@@ -1244,6 +1350,7 @@ arr <- R6::R6Class(
     base_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("array containing: %s", self$base_type), "\n")
     },
@@ -1265,12 +1372,42 @@ arr <- R6::R6Class(
     }
   )
 )
+# Lazy integer range (a:b, seq_len, range +- int). Inferred only, never
+# declared by the user; behaves as an integer vector everywhere else.
+# See development/Plans/range_type.md
+range_vec <- R6::R6Class(
+  "range_vec",
+  public = list(
+    base_type = "integer",
+    r_fct = NULL,
+    real_type = NULL,
+    print = function() {
+      cat("integer range", "\n")
+    },
+    stringify = function(indent = "") {
+      "etr::IntRange"
+    },
+    cast_fct = function() {
+      NULL
+    },
+    get_base_type = function() {
+      self$base_type
+    },
+    get_data_struct = function() {
+      "vector"
+    },
+    get_data_struct_verbose = function() {
+      "range"
+    }
+  )
+)
 borrow_vec <- R6::R6Class(
   "borrow_vec",
   public = list(
     base_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("vector (borrowed) containing: %s", self$base_type), "\n")
     },
@@ -1299,6 +1436,7 @@ borrow_mat <- R6::R6Class(
     base_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("matrix (borrowed) containing: %s", self$base_type), "\n")
     },
@@ -1326,6 +1464,7 @@ borrow_arr <- R6::R6Class(
     base_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("array (borrowed) containing: %s", self$base_type), "\n")
     },
@@ -1393,7 +1532,7 @@ new_type_node <- R6::R6Class(
           }
           res
         } else if (inherits(s, "new_type_node")) {
-          sprintf("%s(%s)", s$name, elt)
+          sprintf("%s(%s)", s$stringify(), elt)
         } else {
           # Handle error
         }
@@ -1442,8 +1581,16 @@ new_type_node <- R6::R6Class(
         "\t", n, "& operator=(", n, "&&) noexcept = default;\n"
       )
     },
+    # T<Dual> -> T<ReverseDouble>: a struct passed as extra data to
+    # jacobian(colouring = "runtime"); implicit, slots assigned one by one
+    create_constructor_converting = function() {
+      fields <- vapply(self$slots, function(s) s$get_name(), character(1L))
+      sprintf("\ttemplate<typename %s_OTHER>\n\t%s(const %s<%s_OTHER>& o) { %s }\n",
+        SCALAR_CPP, self$name, self$name, SCALAR_CPP,
+        paste0(fields, " = o.", fields, ";", collapse = " "))
+    },
     define_type = function() {
-      ctr <- self$create_constructor_SEXP()
+      ctr <- paste0(self$create_constructor_SEXP(), self$create_constructor_converting())
       cast <- self$create_cast_to_SEXP()
       special <- self$create_special_member_functions()
       ts <- lapply(self$slots, function(s) {
@@ -1454,7 +1601,7 @@ new_type_node <- R6::R6Class(
         }
       })
       paste0(
-        "struct ", self$name, "{\n",
+        "template<typename ", SCALAR_CPP, ">\nstruct ", self$name, "{\n",
         paste0(ts, collapse = "\n"),
         "\n",
         ctr,
@@ -1480,7 +1627,7 @@ new_type_node <- R6::R6Class(
         }
       }, character(1L))
       paste0(
-        "inline void print(const ", self$name, "& x) {\n",
+        "template<typename ", SCALAR_CPP, ">\ninline void print(const ", self$stringify(), "& x) {\n",
         "\tPRINT_STREAM << \"", self$name, "\" << std::endl;\n",
         paste0(lines, collapse = "\n"), "\n",
         "}"
@@ -1490,7 +1637,7 @@ new_type_node <- R6::R6Class(
       if (isTRUE(self$part_of_etr)) {
         return(paste0("etr::", self$name))
       }
-      self$name
+      paste0(self$name, "<", SCALAR_CPP, ">")
     },
     cast_fct = function() {
       self$stringify()
@@ -1573,13 +1720,17 @@ collection <- R6::R6Class(
     element_type = NULL,
     r_fct = NULL,
     real_type = NULL,
+    layout = NULL, # layout_def or NULL
     print = function() {
       cat(sprintf("collection containing: %s", self$type), "\n")
     },
     stringify = function(indent = "") {
       basic <- is_base_type(self$type)
       if (basic) {
-        stop("collections cannot contain basic types")
+        stop("collections cannot contain basic types", call. = FALSE)
+      }
+      if (inherits(self$element_type, "new_type_node")) {
+        return(sprintf("etr::Collection<%s>", self$element_type$stringify()))
       }
       sprintf("etr::Collection<%s>", self$type)
     },

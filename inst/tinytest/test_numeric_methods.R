@@ -56,6 +56,8 @@ expect_equal(
   tolerance = 1e-6
 )
 
+if (!at_home()) exit_file("slow: compiles; runs at home / CI only")
+
 # --- nnls ----------------------------------------------------------------
 
 if (!requireNamespace("nnls", quietly = TRUE)) {
@@ -249,3 +251,37 @@ fw <- ast2ast::translate(function(x) {
   return(jac)
 }, derivative = "forward")
 expect_equal(c(fw(c(2.0, 3.0, 4.0))), c(4, 6, 8))
+
+# data passed to the fn of uniroot: borrow_vec and vec are different data structures
+u_owned_to_borrow <- function(interval) {
+  argtypes(interval |> type(vec(double)))
+  g <- function(x, p) {
+    argtypes(x |> type(double), p |> type(borrow_vec(double)))
+    returntype(double)
+    x^2 - p[[1L]]
+  }
+  p <- c(4.0, 1.0)
+  uniroot(g, interval, 1e-10, 1000, p)$root
+}
+expect_error(ast2ast::translate(u_owned_to_borrow), "expected borrow_vector got vector")
+u_borrow_to_owned <- function(interval, p) {
+  argtypes(interval |> type(vec(double)), p |> type(borrow_vec(double)))
+  g <- function(x, p) {
+    argtypes(x |> type(double), p |> type(vec(double)))
+    returntype(double)
+    x^2 - p[[1L]]
+  }
+  uniroot(g, interval, 1e-10, 1000, p)$root
+}
+expect_error(ast2ast::translate(u_borrow_to_owned), "expected vector got borrow_vector")
+# x of jacobian is copied anyway: borrow_vec into a vec parameter is fine
+j_borrow_x <- function(x) {
+  argtypes(x |> type(borrow_vec(double)))
+  g <- function(y) {
+    argtypes(y |> type(vec(double)))
+    returntype(vec(double))
+    y * y
+  }
+  jacobian(g, x)
+}
+expect_true(is.character(ast2ast::translate(j_borrow_x, derivative = "forward", output = "XPtr", getsource = TRUE)))

@@ -1,4 +1,5 @@
 library(tinytest)
+if (!at_home()) exit_file("slow: compiles; runs at home / CI only")
 
 # --- errors inside an inner fn() must name the inner function --------------
 
@@ -112,7 +113,7 @@ f <- function(x) {
 }
 expect_error(
   ast2ast::translate(f, getsource = TRUE),
-  pattern = "In inner function h: Could not run checks on AST due to: \nbreak;\nbreak used outside of a loop"
+  pattern = "In inner function h: Could not run checks on AST due to: break;\nbreak used outside of a loop"
 )
 
 # break inside a loop that itself lives inside the inner fn() body is fine
@@ -208,4 +209,16 @@ f <- function(a) {
 expect_error(
   ast2ast::translate(f, getsource = TRUE),
   pattern = "Cannot assign the result of b\\(\\) to a variable because it does not return a value"
+)
+
+# fn assigned to another variable: leaked C++ errors when h was not called
+f <- function(a) {
+  argtypes(a |> type(double))
+  g <- fn(argtypes(y |> type(double)), return(double), { return(y) })
+  h <- g
+  return(a)
+}
+expect_error(
+  ast2ast::translate(f, getsource = TRUE),
+  pattern = "Cannot assign the function g to the variable h"
 )

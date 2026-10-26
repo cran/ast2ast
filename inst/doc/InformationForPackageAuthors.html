@@ -368,6 +368,52 @@ want to use the translated functions within their own code.
 Additionally, this section endeavors to present pertinent implementation
 details, providing valuable insights into the inner workings of the
 process.</p>
+<p>The headers of <em>ast2ast</em> include <em>RcppThread</em>.
+Therefore, a package using them has to add both to its DESCRIPTION:
+<code>LinkingTo: Rcpp, ast2ast, RcppThread</code>. When using
+<code>Rcpp::sourceCpp</code> the corresponding attribute is
+<code>// [[Rcpp::depends(ast2ast, RcppThread)]]</code>.</p>
+</div>
+<div id="compiling-r-files-into-a-package-make_package" class="section level2">
+<h2>Compiling R files into a package: make_package</h2>
+<p><code>make_package</code> translates R files into the C++ code of an
+existing package, like <code>Rcpp::compileAttributes</code>. The headers
+are copied into the package, so it does not depend on <em>ast2ast</em>
+afterwards.</p>
+<p>Place the files outside of <code>R/</code>, e.g. in
+<code>inst/tools/</code>:</p>
+<pre class="r"><code># inst/tools/types.R
+new_type(Point, slots(x |&gt; type(double), y |&gt; type(double)))
+
+# inst/tools/f.R
+f &lt;- function(p) {
+  argtypes(p |&gt; type(Point))
+  returntype(double)
+  s &lt;- p$x + p$y
+  helper(s)
+}
+helper &lt;- function(s) {
+  argtypes(s |&gt; type(double))
+  returntype(double)
+  s * 2
+}</code></pre>
+<pre class="r"><code>ast2ast::make_package(c(&quot;inst/tools/types.R&quot;, &quot;inst/tools/f.R&quot;), &quot;f&quot;)</code></pre>
+<ul>
+<li>Only <code>f</code> is exported; <code>helper</code> is internal.
+Several entry points: <code>make_package(files, c(&quot;f&quot;, &quot;g&quot;))</code>, one
+C++ file each.</li>
+<li>The files may only contain <code>new_type(...)</code> and function
+definitions.</li>
+<li>The package needs <code>Imports: Rcpp</code>,
+<code>LinkingTo: Rcpp, RcppThread, sundials</code> and in the NAMESPACE
+<code>useDynLib(&lt;package&gt;, .registration = TRUE)</code>,
+<code>importFrom(Rcpp, evalCpp)</code>. <code>make_package</code> checks
+this and reports what is missing. Add <code>export(f)</code> if users
+should call <code>f</code>.</li>
+<li>Rerun <code>make_package</code> after changing the R files.</li>
+<li>Runtime errors name package, file, line and function,
+e.g. <code>In &#39;mypkg: f.R:5 (f): ...&#39;</code>.</li>
+</ul>
 </div>
 <div id="naming-rationalization-ast2ast" class="section level2">
 <h2>Naming rationalization ast2ast</h2>
@@ -421,7 +467,7 @@ subsequent section.</p>
   return(a)
 }</code></pre>
 <pre class="cpp numberLines"><code>#include &lt;Rcpp.h&gt;
-// [[Rcpp::depends(ast2ast)]]
+// [[Rcpp::depends(ast2ast, RcppThread)]]
 // [[Rcpp::plugins(cpp2a)]]
 #include &quot;etr.hpp&quot;
 // [[Rcpp::export]]
@@ -460,7 +506,7 @@ fcpp &lt;- ast2ast::translate(f, output = &quot;XPtr&quot;)</code></pre>
 <div id="afterwards-the-external-pointer-is-used-in-an-r-package" class="section level4">
 <h4>Afterwards the external pointer is used in an R package</h4>
 <pre class="cpp"><code>#include &lt;Rcpp.h&gt;
-// [[Rcpp::depends(ast2ast)]]
+// [[Rcpp::depends(ast2ast, RcppThread)]]
 // [[Rcpp::plugins(cpp2a)]]
 #include &quot;etr.hpp&quot;
 

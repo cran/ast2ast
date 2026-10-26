@@ -7,44 +7,74 @@ namespace etr {
 // Holds subset positions as plain ints. No L/R buffer trait -- an index list is
 // never an expression-template operand. The primary template stays undefined,
 // so Buffer<T> with any other unspecialized T is a compile error.
+//
+// Raw-pointer storage (not std::vector<int>): the only real construction site
+// is create_indices's `out` buffer, which fully overwrites every slot in the
+// very next loop -- std::vector::resize/assign would zero-fill first for no
+// reason (a guarantee it can't skip), so `new int[n]` (genuinely
+// uninitialized for a built-in type) avoids that wasted write.
 template <> struct Buffer<int, LBufferTrait> {
 
   using value_type = int;
 
-  std::vector<int> data;
+  int* p = nullptr;
+  std::size_t sz = 0;
+  std::size_t capacity = 0;
   bool allocated = false;
 
-  std::size_t size() const noexcept { return allocated ? data.size() : 0; }
+  std::size_t size() const noexcept { return allocated ? sz : 0; }
+
+  void reset() noexcept { p = nullptr; sz = 0; capacity = 0; allocated = false; }
 
   Buffer() {}
-  Buffer(const Buffer& other) : data(other.data), allocated(other.allocated) {}
+  Buffer(const Buffer& other) : sz(other.sz), capacity(other.capacity), allocated(other.allocated) {
+    if (!allocated || capacity == 0) { reset(); return; }
+    p = new int[capacity];
+    std::copy_n(other.p, sz, p);
+  }
   Buffer(Buffer&& other) noexcept
-  : data(std::move(other.data)), allocated(other.allocated) { other.allocated = false; }
+  : p(std::exchange(other.p, nullptr)),
+    sz(std::exchange(other.sz, 0)),
+    capacity(std::exchange(other.capacity, 0)),
+    allocated(std::exchange(other.allocated, false)) {}
   Buffer& operator=(const Buffer& other) {
     if (this == &other) return *this;
-    data = other.data;
+    if (other.size() > capacity) {
+      delete[] p;
+      p = other.size() ? new int[other.size()] : nullptr;
+      capacity = other.size();
+    }
+    sz = other.size();
+    if (sz) std::copy_n(other.p, sz, p);
     allocated = other.allocated;
     return *this;
   }
   Buffer& operator=(Buffer&& other) noexcept {
     if (this == &other) return *this;
-    data = std::move(other.data);
-    allocated = other.allocated;
-    other.allocated = false;
+    swap(other);
     return *this;
   }
   Buffer(std::size_t sz_) { init(sz_); }
 
-  ~Buffer() { data.clear(); }
+  ~Buffer() { delete[] p; }
 
   void init(std::size_t size) {
-    ass<"Size has to be larger than 0!">(size > 0);
-    data.assign(size, 0);
+    delete[] p;
+    p = new int[size];
+    sz = size;
+    capacity = size;
     allocated = true;
   }
 
   void resize(std::size_t newSize) {
-    data.resize(newSize);
+    if (newSize > capacity) {
+      int* new_p = new int[newSize];
+      std::copy_n(p, sz, new_p);
+      delete[] p;
+      p = new_p;
+      capacity = newSize;
+    }
+    sz = newSize;
     allocated = true;
   }
 
@@ -57,23 +87,29 @@ template <> struct Buffer<int, LBufferTrait> {
   value_type get(std::size_t idx) const {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < size());
-    return data[idx];
+    return p[idx];
   }
 
   void set(std::size_t idx, const value_type& val) {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < size());
-    data[idx] = val;
+    p[idx] = val;
   }
 
+  // Skip both checks -- for callers (e.g. the subsetting offset pipeline)
+  // that already proved idx is valid once, up front, for the whole buffer.
+  value_type get_unchecked(std::size_t idx) const { return p[idx]; }
+  void set_unchecked(std::size_t idx, const value_type& val) { p[idx] = val; }
+
   template <typename L2> void moveit(L2& other) {
-    data.swap(other.data);
-    std::swap(allocated, other.allocated);
+    swap(other);
     allocated = true;
   }
 
   void swap(Buffer& other) noexcept {
-    data.swap(other.data);
+    std::swap(p, other.p);
+    std::swap(sz, other.sz);
+    std::swap(capacity, other.capacity);
     std::swap(allocated, other.allocated);
   }
 
@@ -89,7 +125,15 @@ template <> struct Buffer<int, LBufferTrait> {
   auto end() const { return iterator(this, size()); }
 
   template <typename T> void push_back(T input) {
-    data.push_back(static_cast<int>(get_val(input)));
+    if (sz == capacity) {
+      const std::size_t new_cap = capacity == 0 ? 1 : capacity * 2;
+      int* new_p = new int[new_cap];
+      std::copy_n(p, sz, new_p);
+      delete[] p;
+      p = new_p;
+      capacity = new_cap;
+    }
+    p[sz++] = static_cast<int>(get_val(input));
     allocated = true;
   }
 };
@@ -134,7 +178,6 @@ template <typename BufferTrait> struct Buffer<ReverseDouble, BufferTrait> {
   void initSEXP(SEXP s) {
     ass<"R object is not of type numeric">(Rf_isReal(s));
     std::size_t sz_ = static_cast<std::size_t>(Rf_length(s));
-    ass<"R object seems to be empty">(sz_ >= 1);
     data.clear();
     data.reserve(sz_);
     for (std::size_t i = 0; i < sz_; i++) data.emplace_back(REAL(s)[i]);
@@ -154,7 +197,6 @@ template <typename BufferTrait> struct Buffer<ReverseDouble, BufferTrait> {
   // Each default-constructed ReverseDouble pushes its own const-0 node, so
   // every element starts on an independent tape node.
   void init(std::size_t size) {
-    ass<"Size has to be larger than 0!">(size > 0);
     data.clear();
     data.resize(size);   // resize value-inits each element separately -> own node
     allocated = true;
@@ -188,6 +230,12 @@ template <typename BufferTrait> struct Buffer<ReverseDouble, BufferTrait> {
     data[idx] = val;
   }
 
+  // Skip both checks -- for callers that already proved idx is valid once,
+  // up front, for the whole buffer.
+  ReverseDouble& get_unchecked(std::size_t idx) { return data[idx]; }
+  const ReverseDouble& get_unchecked(std::size_t idx) const { return data[idx]; }
+  void set_unchecked(std::size_t idx, const ReverseDouble& val) { data[idx] = val; }
+
   template <typename L2> void moveit(L2& other) {
     data.swap(other.data);
     std::swap(allocated, other.allocated);
@@ -217,10 +265,9 @@ template <typename BufferTrait> struct Buffer<ReverseDouble, BufferTrait> {
 };
 
 //==============================================================================
-// SoA specialization for the simple scalar types (Double / Integer / Logical).
-// Storage is split into a raw data array (p_val) and a parallel NA-flag array
-// (p_na). This lets callers hand `p_val` directly to numeric kernels that
-// expect a plain double* / int* / bool* buffer.
+// Buffer for the simple scalar types (Double / Integer / Logical).
+// One raw array in R's layout (double* / int*); NA is R's sentinel inside the
+// data, so `p_val` goes directly to numeric kernels and to/from SEXPs.
 //==============================================================================
 template <typename Scalar, typename BufferTrait>
 struct SoABuffer {
@@ -230,7 +277,6 @@ struct SoABuffer {
   using TypeTrait  = BufferTrait;
 
   raw_type*   p_val = nullptr;
-  bool*       p_na  = nullptr;
   std::size_t sz = 0;
   std::size_t capacity = 0;
   bool allocated = false;
@@ -239,12 +285,9 @@ struct SoABuffer {
 
   raw_type*       data()       noexcept { return p_val; }
   const raw_type* data() const noexcept { return p_val; }
-  bool*           na_data()       noexcept { return p_na; }
-  const bool*     na_data() const noexcept { return p_na; }
 
   void reset() noexcept {
     p_val = nullptr;
-    p_na  = nullptr;
     sz = 0;
     capacity = 0;
     allocated = false;
@@ -257,14 +300,11 @@ struct SoABuffer {
     if (!allocated || capacity == 0) { reset(); return; }
     ass<"Buffer invariant violated: sz > capacity">(!(sz > capacity));
     p_val = new raw_type[capacity];
-    p_na  = new bool[capacity];
     std::copy_n(other.p_val, sz, p_val);
-    std::copy_n(other.p_na,  sz, p_na);
   }
 
   SoABuffer(SoABuffer&& other) noexcept
   : p_val(std::exchange(other.p_val, nullptr)),
-    p_na (std::exchange(other.p_na,  nullptr)),
     sz   (std::exchange(other.sz, 0)),
     capacity(std::exchange(other.capacity, 0)),
     allocated(std::exchange(other.allocated, false)) {}
@@ -275,7 +315,6 @@ struct SoABuffer {
     sz = other.size();
     if (sz) {
       std::copy_n(other.p_val, sz, p_val);
-      std::copy_n(other.p_na,  sz, p_na);
     }
     return *this;
   }
@@ -286,14 +325,12 @@ struct SoABuffer {
   }
 
   SoABuffer(std::size_t sz_) {
-    ass<"Size has to be larger than 0!">(sz_ > 0);
     init(sz_);
   }
 
   ~SoABuffer() {
     if (allocated) {
       delete[] p_val;
-      delete[] p_na;
       reset();
     }
   }
@@ -302,14 +339,11 @@ struct SoABuffer {
     if (allocated) {
       ass<"try to delete nullptr">(p_val != nullptr);
       delete[] p_val;
-      delete[] p_na;
       p_val = nullptr;
-      p_na  = nullptr;
     }
     sz = size_;
     capacity = static_cast<std::size_t>(1.15 * static_cast<double>(sz));
     p_val = new raw_type[capacity];
-    p_na  = new bool[capacity];
     fill(Scalar());
     allocated = true;
   }
@@ -317,22 +351,17 @@ struct SoABuffer {
   void realloc(std::size_t new_size) {
     std::size_t new_capacity = static_cast<std::size_t>(new_size * 1.15);
     raw_type* new_val = new raw_type[new_capacity];
-    bool*     new_na  = new bool[new_capacity];
 
     const std::size_t keep = std::min(sz, new_size);
     for (std::size_t i = 0; i < keep; ++i) {
       new_val[i] = p_val[i];
-      new_na[i]  = p_na[i];
     }
     for (std::size_t i = keep; i < new_size; ++i) {
       new_val[i] = raw_type{};
-      new_na[i]  = false;
     }
 
     delete[] p_val;
-    delete[] p_na;
     p_val = new_val;
-    p_na  = new_na;
     capacity = new_capacity;
     sz = new_size;
     allocated = true;
@@ -356,28 +385,21 @@ struct SoABuffer {
             || IS<Decayed<V>, Scalar>)
   void fill(V&& v) {
     raw_type base_val;
-    bool     base_na;
     if constexpr (IS<Decayed<V>, Scalar>) {
       base_val = v.val;
-      base_na  = v.is_na;
     } else if constexpr (IsScalarOrScalarRef<Decayed<V>>) {
-      Scalar tmp = static_cast<Scalar>(get_val(v));
-      base_val = tmp.val;
-      base_na  = tmp.is_na;
+      base_val = Scalar(get_scalar_val(v)).val;
     } else {
       base_val = static_cast<raw_type>(v);
-      base_na  = false;
     }
     std::fill(p_val, p_val + sz, base_val);
-    std::fill(p_na,  p_na  + sz, base_na);
   }
 
   value_type get(std::size_t idx) const {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < sz);
     Scalar s;
-    s.val   = p_val[idx];
-    s.is_na = p_na[idx];
+    s.val = p_val[idx];
     return s;
   }
 
@@ -385,7 +407,17 @@ struct SoABuffer {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < sz);
     p_val[idx] = val.val;
-    p_na[idx]  = val.is_na;
+  }
+
+  // Skip both checks -- for callers that already proved idx is valid once,
+  // up front, for the whole buffer.
+  value_type get_unchecked(std::size_t idx) const {
+    Scalar s;
+    s.val = p_val[idx];
+    return s;
+  }
+  void set_unchecked(std::size_t idx, const value_type& val) {
+    p_val[idx] = val.val;
   }
 
   void push_back(const value_type& input) {
@@ -396,13 +428,11 @@ struct SoABuffer {
       sz = szOld;
     }
     p_val[sz] = input.val;
-    p_na[sz]  = input.is_na;
     ++sz;
   }
 
   template <typename L2> void moveit(L2& other) {
     std::swap(p_val,     other.p_val);
-    std::swap(p_na,      other.p_na);
     std::swap(sz,        other.sz);
     std::swap(capacity,  other.capacity);
     std::swap(allocated, other.allocated);
@@ -412,7 +442,6 @@ struct SoABuffer {
   void swap(SoABuffer& other) noexcept {
     if (this == &other) return;
     std::swap(p_val,     other.p_val);
-    std::swap(p_na,      other.p_na);
     std::swap(sz,        other.sz);
     std::swap(capacity,  other.capacity);
     std::swap(allocated, other.allocated);
@@ -420,7 +449,6 @@ struct SoABuffer {
 
   struct Iterator {
     const raw_type* v;
-    const bool*     n;
     std::size_t     idx;
 
     using value_type        = Scalar;
@@ -430,8 +458,7 @@ struct SoABuffer {
 
     reference operator*() const {
       Scalar s;
-      s.val   = v[idx];
-      s.is_na = n[idx];
+      s.val = v[idx];
       return s;
     }
     Iterator& operator++() { ++idx; return *this; }
@@ -440,11 +467,11 @@ struct SoABuffer {
 
   Iterator begin() const {
     ass<"No memory was allocated">(allocated);
-    return Iterator{ p_val, p_na, 0 };
+    return Iterator{ p_val, 0 };
   }
   Iterator end() const {
     ass<"No memory was allocated">(allocated);
-    return Iterator{ p_val, p_na, sz };
+    return Iterator{ p_val, sz };
   }
 };
 
@@ -456,7 +483,6 @@ struct Buffer<Double, BufferTrait> : SoABuffer<Double, BufferTrait> {
   using Base = SoABuffer<Double, BufferTrait>;
   using Base::Base;
   using Base::p_val;
-  using Base::p_na;
   using Base::sz;
   using Base::capacity;
   using Base::allocated;
@@ -468,20 +494,14 @@ struct Buffer<Double, BufferTrait> : SoABuffer<Double, BufferTrait> {
   void initSEXP(SEXP s) {
     if (allocated) {
       delete[] p_val;
-      delete[] p_na;
       reset();
     }
     ass<"R object is not of type numeric">(Rf_isReal(s));
     sz = static_cast<std::size_t>(Rf_length(s));
-    ass<"R object seems to be empty">(sz >= 1);
     capacity = sz;
     p_val = new double[capacity];
-    p_na  = new bool[capacity];
-    const double* src = REAL(s);
-    for (std::size_t i = 0; i < sz; ++i) {
-      p_val[i] = src[i];
-      p_na[i]  = ISNA(src[i]);
-    }
+    // R-devel returns dummy pointer 0x1 for zero-length vectors (UBSan)
+    if (sz > 0) std::copy_n(REAL(s), sz, p_val);
     allocated = true;
   }
   Buffer(SEXP s) { initSEXP(s); }
@@ -496,7 +516,6 @@ struct Buffer<Integer, BufferTrait> : SoABuffer<Integer, BufferTrait> {
   using Base = SoABuffer<Integer, BufferTrait>;
   using Base::Base;
   using Base::p_val;
-  using Base::p_na;
   using Base::sz;
   using Base::capacity;
   using Base::allocated;
@@ -508,20 +527,13 @@ struct Buffer<Integer, BufferTrait> : SoABuffer<Integer, BufferTrait> {
   void initSEXP(SEXP s) {
     if (allocated) {
       delete[] p_val;
-      delete[] p_na;
       reset();
     }
     ass<"R object is not of type integer">(Rf_isInteger(s));
     sz = static_cast<std::size_t>(Rf_length(s));
-    ass<"R object seems to be empty">(sz >= 1);
     capacity = sz;
     p_val = new int[capacity];
-    p_na  = new bool[capacity];
-    const int* src = INTEGER(s);
-    for (std::size_t i = 0; i < sz; ++i) {
-      p_val[i] = src[i];
-      p_na[i]  = (src[i] == NA_INTEGER);
-    }
+    if (sz > 0) std::copy_n(INTEGER(s), sz, p_val);
     allocated = true;
   }
   Buffer(SEXP s) { initSEXP(s); }
@@ -536,7 +548,6 @@ struct Buffer<Logical, BufferTrait> : SoABuffer<Logical, BufferTrait> {
   using Base = SoABuffer<Logical, BufferTrait>;
   using Base::Base;
   using Base::p_val;
-  using Base::p_na;
   using Base::sz;
   using Base::capacity;
   using Base::allocated;
@@ -548,20 +559,13 @@ struct Buffer<Logical, BufferTrait> : SoABuffer<Logical, BufferTrait> {
   void initSEXP(SEXP s) {
     if (allocated) {
       delete[] p_val;
-      delete[] p_na;
       reset();
     }
     ass<"R object is not of type logical">(Rf_isLogical(s));
     sz = static_cast<std::size_t>(Rf_length(s));
-    ass<"R object seems to be empty">(sz >= 1);
     capacity = sz;
-    p_val = new bool[capacity];
-    p_na  = new bool[capacity];
-    const int* src = LOGICAL(s);
-    for (std::size_t i = 0; i < sz; ++i) {
-      p_na[i]  = (src[i] == NA_LOGICAL);
-      p_val[i] = p_na[i] ? false : static_cast<bool>(src[i]);
-    }
+    p_val = new int[capacity];
+    if (sz > 0) std::copy_n(LOGICAL(s), sz, p_val);
     allocated = true;
   }
   Buffer(SEXP s) { initSEXP(s); }
@@ -580,10 +584,9 @@ struct Buffer<Dual, BufferTrait> {
   using Trait      = BufferTrait;
   using TypeTrait  = BufferTrait;
 
+  // NA is na_real() inside p_val / p_dot (R's layout, no flag arrays)
   double* p_val     = nullptr;
-  bool*   p_na      = nullptr;
   double* p_dot     = nullptr;
-  bool*   p_na_dot  = nullptr;
   std::size_t sz = 0;
   std::size_t capacity = 0;
   bool allocated = false;
@@ -594,14 +597,9 @@ struct Buffer<Dual, BufferTrait> {
   const double* data()    const noexcept { return p_val; }
   double*       dot_data()      noexcept { return p_dot; }
   const double* dot_data() const noexcept { return p_dot; }
-  bool*         na_data()         noexcept { return p_na; }
-  const bool*   na_data()   const noexcept { return p_na; }
-  bool*         dot_na_data()       noexcept { return p_na_dot; }
-  const bool*   dot_na_data() const noexcept { return p_na_dot; }
 
   void reset() noexcept {
     p_val = nullptr; p_dot = nullptr;
-    p_na  = nullptr; p_na_dot = nullptr;
     sz = 0; capacity = 0; allocated = false;
   }
 
@@ -613,21 +611,13 @@ struct Buffer<Dual, BufferTrait> {
     ass<"Buffer invariant violated: sz > capacity">(!(sz > capacity));
     p_val    = new double[capacity];
     p_dot    = new double[capacity];
-    p_na     = new bool[capacity];
-    p_na_dot = new bool[capacity];
-    for (std::size_t i = 0; i < sz; ++i) {
-      p_val[i]    = other.p_val[i];
-      p_dot[i]    = other.p_dot[i];
-      p_na[i]     = other.p_na[i];
-      p_na_dot[i] = other.p_na_dot[i];
-    }
+    std::copy_n(other.p_val, sz, p_val);
+    std::copy_n(other.p_dot, sz, p_dot);
   }
 
   Buffer(Buffer&& other) noexcept
   : p_val   (std::exchange(other.p_val,    nullptr)),
-    p_na    (std::exchange(other.p_na,     nullptr)),
     p_dot   (std::exchange(other.p_dot,    nullptr)),
-    p_na_dot(std::exchange(other.p_na_dot, nullptr)),
     sz      (std::exchange(other.sz, 0)),
     capacity(std::exchange(other.capacity, 0)),
     allocated(std::exchange(other.allocated, false)) {}
@@ -636,12 +626,8 @@ struct Buffer<Dual, BufferTrait> {
     if (this == &other) return *this;
     if (other.size() > capacity) resize(other.size());
     sz = other.size();
-    for (std::size_t i = 0; i < sz; ++i) {
-      p_val[i]    = other.p_val[i];
-      p_dot[i]    = other.p_dot[i];
-      p_na[i]     = other.p_na[i];
-      p_na_dot[i] = other.p_na_dot[i];
-    }
+    std::copy_n(other.p_val, sz, p_val);
+    std::copy_n(other.p_dot, sz, p_dot);
     return *this;
   }
 
@@ -651,7 +637,6 @@ struct Buffer<Dual, BufferTrait> {
   }
 
   Buffer(std::size_t sz_) {
-    ass<"Size has to be larger than 0!">(sz_ > 0);
     init(sz_);
   }
 
@@ -659,8 +644,6 @@ struct Buffer<Dual, BufferTrait> {
     if (allocated) {
       delete[] p_val;
       delete[] p_dot;
-      delete[] p_na;
-      delete[] p_na_dot;
       reset();
     }
   }
@@ -669,15 +652,11 @@ struct Buffer<Dual, BufferTrait> {
     if (allocated) {
       delete[] p_val;    p_val    = nullptr;
       delete[] p_dot;    p_dot    = nullptr;
-      delete[] p_na;     p_na     = nullptr;
-      delete[] p_na_dot; p_na_dot = nullptr;
     }
     sz = size_;
     capacity = static_cast<std::size_t>(1.15 * static_cast<double>(sz));
     p_val    = new double[capacity];
     p_dot    = new double[capacity];
-    p_na     = new bool[capacity];
-    p_na_dot = new bool[capacity];
     fill(Dual());
     allocated = true;
   }
@@ -686,29 +665,20 @@ struct Buffer<Dual, BufferTrait> {
     std::size_t new_capacity = static_cast<std::size_t>(new_size * 1.15);
     double* nv   = new double[new_capacity];
     double* nd   = new double[new_capacity];
-    bool*   nn   = new bool[new_capacity];
-    bool*   nnd  = new bool[new_capacity];
 
     const std::size_t keep = std::min(sz, new_size);
     for (std::size_t i = 0; i < keep; ++i) {
       nv[i]  = p_val[i];
       nd[i]  = p_dot[i];
-      nn[i]  = p_na[i];
-      nnd[i] = p_na_dot[i];
     }
     for (std::size_t i = keep; i < new_size; ++i) {
       nv[i]  = 0.0;
       nd[i]  = 0.0;
-      nn[i]  = false;
-      nnd[i] = false;
     }
 
     delete[] p_val;    delete[] p_dot;
-    delete[] p_na;     delete[] p_na_dot;
     p_val    = nv;
     p_dot    = nd;
-    p_na     = nn;
-    p_na_dot = nnd;
     capacity = new_capacity;
     sz = new_size;
     allocated = true;
@@ -726,29 +696,22 @@ struct Buffer<Dual, BufferTrait> {
   void fill(V&& v) {
     Dual d = [&] {
       if constexpr (IS<Decayed<V>, Dual>) return v;
-      else if constexpr (IsScalarOrScalarRef<Decayed<V>>) return static_cast<Dual>(get_val(v));
+      else if constexpr (IsScalarOrScalarRef<Decayed<V>>) return Dual(get_scalar_val(v));
       else return Dual(static_cast<double>(v), 0.0);
     }();
     std::fill(p_val,    p_val    + sz, d.val);
     std::fill(p_dot,    p_dot    + sz, d.dot);
-    std::fill(p_na,     p_na     + sz, d.is_na);
-    std::fill(p_na_dot, p_na_dot + sz, d.is_na_dot);
   }
 
   value_type get(std::size_t idx) const {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < sz);
-    Dual d(p_val[idx], p_dot[idx]);
-    d.is_na     = p_na[idx];
-    d.is_na_dot = p_na_dot[idx];
-    return d;
+    return Dual(p_val[idx], p_dot[idx]);
   }
   Double get_dot(std::size_t idx) const {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < sz);
-    Double out(p_dot[idx]);
-    out.is_na = p_na_dot[idx];
-    return out;
+    return Double(p_dot[idx]);
   }
 
   void set(std::size_t idx, const value_type& val) {
@@ -756,14 +719,22 @@ struct Buffer<Dual, BufferTrait> {
     ass<"Error: out of boundaries">(idx < sz);
     p_val[idx]    = val.val;
     p_dot[idx]    = val.dot;
-    p_na[idx]     = val.is_na;
-    p_na_dot[idx] = val.is_na_dot;
   }
+
+  // Skip both checks -- for callers that already proved idx is valid once,
+  // up front, for the whole buffer.
+  value_type get_unchecked(std::size_t idx) const {
+    return Dual(p_val[idx], p_dot[idx]);
+  }
+  void set_unchecked(std::size_t idx, const value_type& val) {
+    p_val[idx]    = val.val;
+    p_dot[idx]    = val.dot;
+  }
+
   void set_dot(std::size_t idx, const double& val_dot) {
     ass<"No memory was allocated">(allocated);
     ass<"Error: out of boundaries">(idx < sz);
     p_dot[idx]    = val_dot;
-    p_na_dot[idx] = false;
   }
 
   void push_back(const Dual& input) {
@@ -775,16 +746,12 @@ struct Buffer<Dual, BufferTrait> {
     }
     p_val[sz]    = input.val;
     p_dot[sz]    = input.dot;
-    p_na[sz]     = input.is_na;
-    p_na_dot[sz] = input.is_na_dot;
     ++sz;
   }
 
   template <typename L2> void moveit(L2& other) {
     std::swap(p_val,    other.p_val);
     std::swap(p_dot,    other.p_dot);
-    std::swap(p_na,     other.p_na);
-    std::swap(p_na_dot, other.p_na_dot);
     std::swap(sz,       other.sz);
     std::swap(capacity, other.capacity);
     std::swap(allocated,other.allocated);
@@ -795,8 +762,6 @@ struct Buffer<Dual, BufferTrait> {
     if (this == &other) return;
     std::swap(p_val,    other.p_val);
     std::swap(p_dot,    other.p_dot);
-    std::swap(p_na,     other.p_na);
-    std::swap(p_na_dot, other.p_na_dot);
     std::swap(sz,       other.sz);
     std::swap(capacity, other.capacity);
     std::swap(allocated,other.allocated);
@@ -805,8 +770,6 @@ struct Buffer<Dual, BufferTrait> {
   struct Iterator {
     const double* v;
     const double* d;
-    const bool*   nv;
-    const bool*   nd;
     std::size_t   idx;
 
     using value_type        = Dual;
@@ -815,10 +778,7 @@ struct Buffer<Dual, BufferTrait> {
     using iterator_category = std::forward_iterator_tag;
 
     Dual operator*() const {
-      Dual out(v[idx], d[idx]);
-      out.is_na     = nv[idx];
-      out.is_na_dot = nd[idx];
-      return out;
+      return Dual(v[idx], d[idx]);
     }
     Iterator& operator++() { ++idx; return *this; }
     bool operator!=(const Iterator& o) const { return idx != o.idx; }
@@ -826,11 +786,11 @@ struct Buffer<Dual, BufferTrait> {
 
   Iterator begin() const {
     ass<"No memory was allocated">(allocated);
-    return Iterator{ p_val, p_dot, p_na, p_na_dot, 0 };
+    return Iterator{ p_val, p_dot, 0 };
   }
   Iterator end() const {
     ass<"No memory was allocated">(allocated);
-    return Iterator{ p_val, p_dot, p_na, p_na_dot, sz };
+    return Iterator{ p_val, p_dot, sz };
   }
 
 #ifdef STANDALONE_ETR
@@ -838,24 +798,15 @@ struct Buffer<Dual, BufferTrait> {
   void initSEXP(SEXP s) {
     if (allocated) {
       delete[] p_val;    delete[] p_dot;
-      delete[] p_na;     delete[] p_na_dot;
       reset();
     }
     ass<"R object is not of type numeric">(Rf_isReal(s));
     sz = static_cast<std::size_t>(Rf_length(s));
-    ass<"R object seems to be empty">(sz >= 1);
     capacity = sz;
     p_val    = new double[capacity];
     p_dot    = new double[capacity];
-    p_na     = new bool[capacity];
-    p_na_dot = new bool[capacity];
-    const double* src = REAL(s);
-    for (std::size_t i = 0; i < sz; ++i) {
-      p_val[i]    = src[i];
-      p_dot[i]    = 0.0;
-      p_na[i]     = ISNA(src[i]);
-      p_na_dot[i] = false;
-    }
+    if (sz > 0) std::copy_n(REAL(s), sz, p_val);
+    std::fill(p_dot, p_dot + sz, 0.0);
     allocated = true;
   }
   Buffer(SEXP s) { initSEXP(s); }

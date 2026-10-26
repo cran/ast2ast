@@ -52,7 +52,7 @@ traverse_ast <- function(node, action, ...) {
   } else if (inherits(node, "literal_node")) {
     action(node, ...)
   } else {
-    stop("Unknown node type: ", class(node))
+    stop("Unknown node type: ", class(node), call. = FALSE)
   }
 }
 
@@ -61,22 +61,42 @@ traverse_ast <- function(node, action, ...) {
 # inner fn nested within it) actually references -- a nested lambda referencing
 # an outer fn forces all enclosing lambdas to capture it too.
 # ========================================================================
-collect_called_fcts <- function(node) {
+collect_used_fcts <- function(node, var_list) {
   if (is.null(node)) return(character(0))
-  switch(class(node)[[1]],
-    binary_node = c(node$operator, collect_called_fcts(node$left_node), collect_called_fcts(node$right_node)),
-    unary_node = c(node$operator, collect_called_fcts(node$obj)),
-    nullary_node = node$operator,
-    function_node = c(node$operator, unlist(lapply(node$args, collect_called_fcts))),
-    fn_node = collect_called_fcts(node$AST),
-    block_node = unlist(lapply(node$block, collect_called_fcts)),
-    if_node = c(collect_called_fcts(node$condition), collect_called_fcts(node$true_node),
-      collect_called_fcts(node$false_node), unlist(lapply(node$else_if_nodes, collect_called_fcts))),
-    for_node = c(collect_called_fcts(node$i), collect_called_fcts(node$seq), collect_called_fcts(node$block)),
-    while_node = c(collect_called_fcts(node$condition), collect_called_fcts(node$block)),
-    repeat_node = collect_called_fcts(node$block),
-    character(0)
-  )
+  if (inherits(node, "variable_node")) {
+    if (inherits(var_list[[node$name]], "fn_node")) {
+      deparse(node$name)
+    }
+  } else if (inherits(node, "binary_node")) {
+    c(node$operator, collect_used_fcts(node$left_node, var_list), collect_used_fcts(node$right_node, var_list))
+  } else if (inherits(node, "unary_node")) {
+    c(node$operator, collect_used_fcts(node$obj, var_list))
+  } else if (inherits(node, "nullary_node")) {
+    node$operator
+  } else if (inherits(node, "function_node")) {
+    temp <- unlist(lapply(node$args, collect_used_fcts, var_list))
+    c(node$operator, unlist(lapply(node$args, collect_used_fcts, var_list)))
+  } else if (inherits(node, "fn_node")) {
+    # c(node$name, collect_used_fcts(node$AST, var_list)) # TODO: Is this correct for anonymous functions test it
+    collect_used_fcts(node$AST, var_list)
+  } else if (inherits(node, "block_node")) {
+    unlist(lapply(node$block, collect_used_fcts, var_list))
+  } else if (inherits(node, "if_node")) {
+    c(
+      collect_used_fcts(node$condition, var_list),
+      collect_used_fcts(node$true_node, var_list),
+      collect_used_fcts(node$false_node, var_list),
+      unlist(lapply(node$else_if_nodes, collect_used_fcts, var_list))
+    )
+  } else if (inherits(node, "for_node")) {
+    c(collect_used_fcts(node$i, var_list), collect_used_fcts(node$seq, var_list), collect_used_fcts(node$block, var_list))
+  } else if (inherits(node, "while_node")) {
+    c(collect_used_fcts(node$condition, var_list), collect_used_fcts(node$block, var_list))
+  } else if (inherits(node, "repeat_node")) {
+    collect_used_fcts(node$block, var_list)
+  } else {
+    character(0L)
+  }
 }
 
 # For debugging
@@ -103,10 +123,13 @@ augment_outer_var_hint <- function(msg, outer_var_names) {
   msg
 }
 
-action_transpile_inner_functions <- function(node, real_type, debug = TRUE, outer_var_names = character(0)) {
+action_transpile_inner_functions <- function(node, real_type, debug = TRUE, var_list, namespace = "f_impl") {
   if (!inherits(node, "fn_node")) {
     return()
   }
+  # fns defined inside g live in g_namespace; an inline fn opens no namespace of its own
+  inner_namespace <- if (is.null(node$cpp_path)) namespace else paste0(namespace, "::", node$fct_name, "_namespace")
+  outer_var_names <- names(var_list)
   r_fct <- FALSE # Inner functions
   code <- node$AST
   # rebuild a closure -- formals from the parsed args, body from the block -- so the
@@ -126,19 +149,21 @@ action_transpile_inner_functions <- function(node, real_type, debug = TRUE, oute
   info_env$known_types <- node$known_types
   AST <- try(parse_body(body(f) |> wrap_in_block(), info_env, function_registry), silent = TRUE)
   if (inherits(AST, "try-error")) {
-    error_string <- AST |> as.character()
-    stop(sprintf("In inner function %s: Could not translate the function due to %s", node$fct_name, error_string))
+    error_string <- try_message(AST)
+    stop(sprintf("In inner function %s: Could not translate the function due to %s", node$fct_name, error_string), call. = FALSE)
   }
-  e <- try(traverse_ast(AST, action_update_function_registry, function_registry), silent = TRUE)
+  e <- try(traverse_ast(AST, action_update_function_registry, function_registry, inner_namespace), silent = TRUE)
   if (inherits(e, "try-error")) {
-    error_string <- e |> as.character()
-    stop(sprintf("In inner function %s: Could not update the function registry due to: %s", node$fct_name, error_string))
+    error_string <- try_message(e)
+    stop(sprintf("In inner function %s: Could not update the function registry due to: %s", node$fct_name, error_string), call. = FALSE)
   }
 
   known_from_inner <- node$function_registry$permitted_fcts()
   known_outer <- node$function_registry_outer$permitted_fcts()
   diffs <- setdiff(known_outer, known_from_inner)
-  node$known_fcts <- intersect(diffs, collect_called_fcts(AST))
+  # NOTE: all fns of the enclosing scopes, not only the ones used here: a fn
+  # nested deeper may use them (functors, nothing is captured)
+  node$known_fcts <- intersect(diffs, names(var_list))
 
   for (i in diffs) {
     idx <- which(known_outer == i)
@@ -149,35 +174,37 @@ action_transpile_inner_functions <- function(node, real_type, debug = TRUE, oute
     node$function_registry$type_check_fcts <- c(node$function_registry$type_check_fcts, node$function_registry_outer$type_check_fcts[[idx]])
     node$function_registry$groups <- c(node$function_registry$groups, node$function_registry_outer$groups[[idx]])
     node$function_registry$cpp_names <- c(node$function_registry$cpp_names, node$function_registry_outer$cpp_names[[idx]])
+    node$function_registry$deriv_possibles <- c(node$function_registry$deriv_possibles, node$function_registry_outer$deriv_possibles[[idx]])
+    node$function_registry$thread_safes <- c(node$function_registry$thread_safes, node$function_registry_outer$thread_safes[[idx]])
+    node$function_registry$valid_fn_contexts <- c(node$function_registry$valid_fn_contexts, node$function_registry_outer$valid_fn_contexts[[idx]])
     node$function_registry$docus <- c(node$function_registry$docus, "User defined")
   }
 
   e <- try(run_checks(AST, r_fct, function_registry, node$known_types), silent = TRUE)
   if (!is.null(e) && inherits(e, "try-error")) {
-    stop(sprintf("In inner function %s: Could not run checks on AST due to: %s", node$fct_name, attributes(e)[["condition"]]$message))
+    stop(sprintf("In inner function %s: Could not run checks on AST due to: %s", node$fct_name, attributes(e)[["condition"]]$message), call. = FALSE)
   }
   line <- try( {AST$stringify_error_line() }, silent = TRUE)
   if (inherits(line, "try-error")) {
-    stop(sprintf("In inner function %s: Could not stringify the AST", node$fct_name))
+    stop(sprintf("In inner function %s: Could not stringify the AST", node$fct_name), call. = FALSE)
   }
   if (err_found(line)) {
-    stop(sprintf("In inner function %s:\n%s", node$fct_name, line))
+    stop(sprintf("In inner function %s:\n%s", node$fct_name, line), call. = FALSE)
   }
   AST <- sort_args(AST, function_registry)
   node$vars_types_list <- tryCatch(
-    infer_types(AST, f, args_f_raw, r_fct, real_type, function_registry, node$known_types),
+    infer_types(AST, f, args_f_raw, r_fct, real_type, function_registry, node$known_types, extra_vars = var_list[node$known_fcts]),
     error = function(e) stop(sprintf("In inner function %s: %s", node$fct_name,
       augment_outer_var_hint(conditionMessage(e), outer_var_names)), call. = FALSE)
   )
 
-  # TODO: figure out why this loop is required
   for(i in seq_len(length(node$vars_types_list))) {
     node$vars_types_list[[i]]$real_type <- real_type
   }
   node$return_type$real_type <- real_type
 
   if (!is.null(node$return_type$get_error())) {
-    stop(sprintf("Wrong return type for function %s: %s", node$fct_name, node$return_type$get_error()))
+    stop(sprintf("Wrong return type for function %s: %s", node$fct_name, node$return_type$get_error()), call. = FALSE)
   }
 
   trash <- with_fct_error_context(node$fct_name,
@@ -186,25 +213,26 @@ action_transpile_inner_functions <- function(node, real_type, debug = TRUE, oute
     determine_types_of_returns(AST, node$vars_types_list, r_fct, real_type, function_registry, node$known_types))
   if (is.character(return_type)) {
     if (return_type != "void") {
-      stop(sprintf("Found invalid return type %s in function %s", return_type, node$fct_name))
+      stop(sprintf("Found invalid return type %s in function %s", return_type, node$fct_name), call. = FALSE)
     }
     return_type <- make_inferred_type("scalar", "void", r_fct, real_type)
   }
   if (!same_base_type(return_type$get_base_type(), node$return_type$get_base_type())) {
     stop(sprintf(
       "Specified return type does not match the detected return type for function %s. Desired base type is %s but found %s", node$fct_name, node$return_type$get_base_type(), return_type$get_base_type()
-    ))
+    ), call. = FALSE)
   }
   if (!same_data_struct(return_type$get_data_struct(), node$return_type$get_data_struct())) {
     stop(sprintf(
       "Specified return type does not match the detected return type for function %s. Desired data structure is %s but found %s", node$fct_name, node$return_type$get_data_struct(), return_type$get_data_struct()
-    ))
+    ), call. = FALSE)
   }
 
   for (i in seq_along(AST$block)) {
-    traverse_ast(AST$block[[i]], action_transpile_inner_functions, real_type, debug)
+    # var_list for nested fns is this fn's own scope (like the outer call passes `types`)
+    traverse_ast(AST$block[[i]], action_transpile_inner_functions, real_type, debug, node$vars_types_list, inner_namespace)
   }
-  traverse_ast(AST, action_snapshot_lines, debug)
+  traverse_ast(AST, action_snapshot_lines, debug, node$fct_name)
   traverse_ast(AST, action_set_true, r_fct, real_type)
   node$AST <- AST
 }
@@ -221,9 +249,33 @@ action_find_variables <- function(node, env) {
   env$variable_list <- c(env$variable_list, deparse(node$name))
 }
 
+# a range variable cannot bind to a ref() argument (range_type.md, decision 3)
+downgrade_ranges_passed_by_ref <- function(node, fn, info_env) {
+  if (!is.environment(info_env) || is.null(info_env$vars_list)) return()
+  call_args <- if (inherits(node, "unary_node")) {
+    list(node$obj)
+  } else if (inherits(node, "binary_node")) {
+    list(node$left_node, node$right_node)
+  } else if (inherits(node, "function_node")) {
+    node$args
+  } else {
+    list()
+  }
+  for (i in seq_along(call_args)) {
+    a <- call_args[[i]]
+    if (i > length(fn$args_f) || !inherits(a, "variable_node")) next
+    if (fn$args_f[[i]]$get_copy_or_ref() != "ref") next
+    name <- deparse(a$name)
+    if (is_range_type(info_env$vars_list[[name]])) {
+      info_env$vars_list[[name]] <- strip_range(info_env$vars_list[[name]])
+    }
+  }
+}
+
 # add fn_nodes to function_registry
 # ========================================================================
-action_update_function_registry <- function(node, function_registry) {
+# namespace: C++ namespace of the scope the fn is defined in (f_impl, f_impl::g_namespace, ...)
+action_update_function_registry <- function(node, function_registry, namespace = "f_impl") {
   if (!inherits(node, "binary_node") ||
     !(node$operator %in% c("=", "<-")) ||
     !inherits(node$right_node, "fn_node")) {
@@ -231,9 +283,10 @@ action_update_function_registry <- function(node, function_registry) {
   }
   name <- deparse(node$left_node$name)
   if (name %in% function_registry$permitted_fcts()) {
-    stop(sprintf("The name %s is already in use by another function", name))
+    stop(sprintf("The name %s is already in use by another function", name), call. = FALSE)
   }
   fn <- node$right_node
+  fn$cpp_path <- paste0(namespace, "::", name, "_t")
   num_args <- length(fn$args_f)
   if (num_args == 0L) {
     arg_names <- NA
@@ -249,6 +302,7 @@ action_update_function_registry <- function(node, function_registry) {
 
   ret_type <- fn$return_type$clone()
   infer_fct <- function(node, vars_list, info_env, function_registry) {
+    downgrade_ranges_passed_by_ref(node, fn, info_env)
     node$internal_type <- ret_type
     return(ret_type)
   }
@@ -270,9 +324,37 @@ action_update_function_registry <- function(node, function_registry) {
     if (!same_base_type(is_type$get_base_type(), should_type$get_base_type())) {
       node$error <- sprintf("The argument Nr. %s to function %s has not the correct type. Found %s but %s is required", index, name, is_type$get_base_type(), should_type$get_base_type())
     }
-    if (!same_data_struct(is_type$get_data_struct_verbose(), should_type$get_data_struct_verbose())) {
-      node$error <- sprintf("The argument Nr. %s to function %s has not the correct data structure. Found %s but %s is required", index, name, is_type$get_data_struct_verbose(), should_type$get_data_struct_verbose())
+    should_layout <- layout_of(should_type)
+    if (!is.null(should_layout)) {
+      is_layout <- layout_of(is_type)
+      if (is.null(is_layout) || is_layout$name != should_layout$name) {
+        node$error <- sprintf(
+          "The argument Nr. %s to function %s has to be %s, found %s",
+          index, name, layout_usage_text(should_layout),
+          if (is.null(is_layout)) is_type$get_data_struct_verbose() else is_layout$name
+        )
+        return()
+      }
     }
+    is_ds <- is_type$get_data_struct_verbose()
+    should_ds <- should_type$get_data_struct_verbose()
+    if (same_data_struct(is_ds, should_ds)) return()
+    if (!borrow_to_owned(is_ds, should_ds)) {
+      node$error <- sprintf("The argument Nr. %s to function %s has not the correct data structure. Found %s but %s is required", index, name, is_ds, should_ds)
+      return()
+    }
+    # NOTE: a mutable ref would bind to the temporary copy and lose the writes
+    if (should_type$get_copy_or_ref() == "ref" && should_type$get_const_or_mut() == "mutable") {
+      node$error <- sprintf(
+        "The argument Nr. %s to function %s is a mutable ref() to %s but %s was passed; a copy would lose the writes. Declare the parameter as %s |> ref()",
+        index, name, should_ds, is_ds, borrow_type_spelling(is_ds)
+      )
+      return()
+    }
+    warning(sprintf(
+      "The argument Nr. %s to function %s: %s is copied into %s. Declare the parameter as %s to avoid the copy",
+      index, name, is_ds, should_ds, borrow_type_spelling(is_ds)
+    ), call. = FALSE)
   }
   const_or_mut_check <- function(node, should_type, index, name) {
     is_variable <- inherits(node, "variable_node")
@@ -312,8 +394,18 @@ action_update_function_registry <- function(node, function_registry) {
   function_registry$add(
     name = name, num_args = num_args, arg_names = arg_names,
     infer_fct = infer_fct, check_fct = check_fct,
-    group = node_type, cpp_name = name
+    group = node_type, cpp_name = functor_obj(fn$cpp_path)
   )
+}
+
+# a temporary of the hoisted functor, e.g. f_impl::g_t<ETR_REAL>{}
+functor_obj <- function(cpp_path, scalar = NULL) {
+  paste0(cpp_path, "<", if (is.null(scalar)) SCALAR_CPP else dependent_scalar(scalar), ">{}")
+}
+
+# a fixed scalar type, still dependent on the template parameter
+dependent_scalar <- function(scalar) {
+  sprintf("typename etr::dependent_type<%s, %s>::type", scalar, SCALAR_CPP)
 }
 
 # Checks which have to be fulfilled:
@@ -427,25 +519,6 @@ check_operator <- function(node, function_registry) {
     fct %in% function_registry$permitted_fcts()
   }
 
-  check_named_args <- function(node, function_registry) {
-    fct <- node$operator
-    expected_args <- function_registry$expected_arg_names(fct)
-    if (inherits(node, "function_node")) {
-      if (!all(is.na(expected_args))) {
-        args_names <- names(node$args)
-        args_names <- args_names[args_names != ""]
-        for (i in seq_along(args_names)) {
-          if (!(args_names[[i]] %in% expected_args)) {
-            return(FALSE)
-          }
-        }
-      } else {
-        return(TRUE)
-      }
-    }
-    return(TRUE)
-  }
-
   check_lhs_operation <- function(node, function_registry) {
     if (inherits(node, "binary_node")) {
       if (node$operator == "<-" || node$operator == "=") {
@@ -471,17 +544,16 @@ check_operator <- function(node, function_registry) {
     return()
   }
 
-  arity <- check_arity(node, function_registry)
-  if (!isTRUE(arity)) {
-    node$error <- arity
+  # before the arity check: log(x, base = 2) is an unknown name, not a wrong count
+  named <- match_named_args(node, function_registry)
+  if (!isTRUE(named)) {
+    node$error <- paste0(named, signature_hint(node$operator, function_registry))
     return()
   }
 
-  if (!check_named_args(node, function_registry)) {
-    node$error <- paste0(
-      "Found wrong named argument for: ", node$operator,
-      signature_hint(node$operator, function_registry)
-    )
+  arity <- check_arity(node, function_registry)
+  if (!isTRUE(arity)) {
+    node$error <- arity
     return()
   }
 
@@ -503,7 +575,7 @@ unallowed_signs <- function(name) {
     # Thereby, one can easily create argument names nameSEXP and assign it to name
     # - the types of ast2ast: logical, integer, double, int cannot be used as names.
     # Thereby, all.vars can directly be used to find all variables
-    "\\.", "SEXP", "getXPtr", "fct_ptr", "__bound__"
+    "\\.", "SEXP", "getXPtr", "fct_ptr", "__bound__", SCALAR_CPP
   )
   sign_found <- 0
   for (i in seq_along(unallowed)) {
@@ -631,26 +703,26 @@ action_check_break_next <- function(node, info_env) {
 
 # Sort arguments
 # ========================================================================
+match_named_args <- function(node, function_registry) {
+  if (!inherits(node, c("unary_node", "binary_node", "function_node"))) return(TRUE)
+  order <- match_call_args(node$operator, node$call_arg_names,
+                           function_registry$expected_arg_names(node$operator))
+  if (is.character(order)) order else TRUE
+}
+
+# errors were already reported by action_error (match_named_args)
 action_sort_args <- function(node, function_registry) {
-  if (!inherits(node, "function_node")) {
-    return()
-  }
-  fct <- node$operator
-  expected_args <- function_registry$expected_arg_names(fct)
-  if (!all(is.na(expected_args))) {
-    args_names <- names(node$args)
-    unnamed_args <- which(!(args_names %in% expected_args))
-    counter <- 1
-    args <- list()
-    for (i in seq_along(expected_args)) {
-      idx <- which(expected_args[[i]] == args_names)
-      if (length(idx) == 1) {
-        args[[i]] <- node$args[[idx]]
-      } else if (length(idx) == 0) {
-        args[[i]] <- node$args[[unnamed_args[counter]]]
-        counter <- counter + 1
-      }
-    }
+  if (!inherits(node, c("unary_node", "binary_node", "function_node"))) return()
+  order <- match_call_args(node$operator, node$call_arg_names,
+                           function_registry$expected_arg_names(node$operator))
+  node$call_arg_names <- NULL
+  if (is.character(order) || identical(order, seq_along(order))) return()
+  if (inherits(node, "binary_node")) {
+    left <- node$left_node
+    node$left_node <- node$right_node
+    node$right_node <- left
+  } else if (inherits(node, "function_node")) {
+    args <- node$args[order]
     # NOTE: the loop is a requirement.
     # Thereby, the references (especially the args list in function nodes)
     # in "variables" are still valid otherwise the list is empty
@@ -689,7 +761,7 @@ action_check_type_of_args <- function(node, variables, r_fct, real_type, functio
 # wrote, not the emitted C++ (wrap/handle_return/etc. all default to their
 # plain, unflagged rendering at this point).
 # ========================================================================
-action_snapshot_lines <- function(node, debug = TRUE) {
+action_snapshot_lines <- function(node, debug = TRUE, function_name = NULL) {
   if (!inherits(node, "block_node")) {
     return()
   }
@@ -709,7 +781,11 @@ action_snapshot_lines <- function(node, debug = TRUE) {
       # caused the error instead of pointing at the wrong branch.
       stmt$pre_translate_line <- stmt$string_summary_line()
     } else if (!inherits(stmt, c("repeat_node", "fn_node"))) {
-      stmt$pre_translate_line <- stmt$stringify()
+      stmt$pre_translate_line <- if (is.null(stmt$source_line)) stmt$stringify() else stmt$source_line
+    }
+    if (!is.null(stmt$location) && !is.null(stmt$pre_translate_line)) {
+      fn <- if (is.null(function_name)) "" else sprintf(" (%s)", function_name)
+      stmt$pre_translate_line <- paste0(stmt$location, fn, ": ", stmt$pre_translate_line)
     }
   }
 }
@@ -734,6 +810,11 @@ action_set_true <- function(node, r_fct, real_type) {
   }
 }
 action_translate <- function(node, function_registry, real_type) {
+  if (inherits(node, "variable_node") && inherits(node$internal_type, "fn_node") &&
+      !is.null(node$internal_type$cpp_path)) {
+    node$cpp_override <- functor_obj(node$internal_type$cpp_path, node$functor_scalar)
+    return()
+  }
   if (!inherits(node, "binary_node") &&
     !inherits(node, "unary_node") &&
     !inherits(node, "nullary_node") &&
@@ -748,38 +829,42 @@ action_translate <- function(node, function_registry, real_type) {
   } else {
     if (inherits(node, "function_node") && node$operator == "vector") {
       mode <- remove_double_quotes(node$args[[1L]]$name)
-      if (mode == "logical") {
+      layout <- layout_of(node$internal_type)
+      if (!is.null(layout)) {
+        # layout: a plain vector of its base type; without length: number of names
+        if (length(node$args) == 1L) {
+          # NOTE: created after action_set_true, so wrap has to be set here
+          len <- literal_node$new(length(layout$names))
+          len$context <- node$args[[1L]]$context
+          len$real_type <- node$args[[1L]]$real_type
+          len$wrap <- TRUE
+          node$args[[2L]] <- len
+        }
+        node$operator <- layout_allocator(layout, real_type)
+        node$args <- node$args[-1L]
+      }
+      else if (mode == "logical") {
         node$operator <- "etr::logical"
       } else if (mode == "integer") {
         node$operator <- "etr::integer"
       } else if (mode == "numeric") {
-        op <- list(
-          "etr::Double" = "etr::numeric",
-          "etr::Dual" = "etr::numeric_dual",
-          "etr::ReverseDouble" = "etr::numeric_reverse_double"
-        )[[real_type]]
-        node$operator <- op
+        node$operator <- paste0("etr::numeric_of<", scalar_cpp(real_type), ">")
         node$args[[1]] <- NULL
         node$args <- Filter(Negate(is.null), node$args)
       } else if (inherits(node$internal_type, "pre_type_node") && node$internal_type$get_data_struct() == "collection") {
-        node$operator <- sprintf("etr::Collection<%s>", mode)
+        node$operator <- node$internal_type$data_struct$stringify()
         node$args[[1]] <- NULL
         node$args <- Filter(Negate(is.null), node$args)
       }
     }
     else if (inherits(node, "function_node") && node$operator == "diag") {
-      node$operator <- paste0("etr::diag<", real_type, ">")
+      node$operator <- paste0("etr::diag<", scalar_cpp(real_type), ">")
     }
     else if (inherits(node, "unary_node") && node$operator == "as.numeric") {
-      node$operator <- paste0("etr::as_numeric<", real_type, ">")
+      node$operator <- paste0("etr::as_numeric<", scalar_cpp(real_type), ">")
     }
     else if (inherits(node, "unary_node") && node$operator == "numeric") {
-      op <- list(
-        "etr::Double" = "etr::numeric",
-        "etr::Dual" = "etr::numeric_dual",
-        "etr::ReverseDouble" = "etr::numeric_reverse_double"
-      )[[real_type]]
-      node$operator <- op
+      node$operator <- paste0("etr::numeric_of<", scalar_cpp(real_type), ">")
     }
     else if (inherits(node, "binary_node") && node$operator %in% c("[[", "at") &&
              inherits(node$left_node$internal_type, "pre_type_node") &&

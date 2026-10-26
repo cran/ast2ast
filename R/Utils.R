@@ -5,6 +5,11 @@ is_symbol <- function (x) {
   return(TRUE)
 }
 
+# message of a try-error without R's "Error in <internal call> :" prefix (#56)
+try_message <- function(e) {
+  conditionMessage(attr(e, "condition"))
+}
+
 err_found <- function(string) {
   if (is.null(string)) return(FALSE)
   string <- gsub("\n|\t| ", "", string)
@@ -19,22 +24,68 @@ wrap_in_block <- function(expr) {
   as.call(list(as.name("{"), expr))
 }
 
+srcref_location <- function(srcref) {
+  file <- utils::getSrcFilename(srcref)
+  if (length(file) == 0L || file %in% c("", "<text>")) return(NULL)
+  sprintf("%s:%d", file, srcref[1L])
+}
+
+# NOTE: rebuilding a block drops its srcrefs; valid only if the kept statements are the trailing ones of old_block
+keep_trailing_srcrefs <- function(new_block, old_block) {
+  refs <- attr(old_block, "srcref")
+  if (is.null(refs)) return(new_block)
+  attr(new_block, "srcref") <- c(refs[1L], utils::tail(refs, length(new_block) - 1L))
+  new_block
+}
+
 same_base_type <- function(is, should) {
   if (is == "int") is <- "integer"
   if (should == "int") should <- "integer"
   should == is
 }
+normalize_data_struct <- function(ds) {
+  if (ds == "vec") return("vector")
+  if (ds == "range") return("vector")
+  if (ds == "borrow_vec") return("borrow_vector")
+  if (ds == "mat") return("matrix")
+  if (ds == "borrow_mat") return("borrow_matrix")
+  ds
+}
 same_data_struct <- function(is, should) {
-  correct <- function(ds) {
-    if (ds == "vec") return("vector")
-    if (ds == "borrow_vec") return("borrow_vector")
-    if (ds == "mat") return("matrix")
-    if (ds == "borrow_mat") return("borrow_matrix")
+  normalize_data_struct(is) == normalize_data_struct(should)
+}
+layout_holders <- c("vec", "borrow_vec", "mat", "borrow_mat", "arr", "borrow_arr", "collection")
+layout_of <- function(t) {
+  if (inherits(t, "pre_type_node") && inherits(t$data_struct, layout_holders)) t$data_struct$layout
+}
+cpp_dimnames_list <- function(dimnames) {
+  dims <- vapply(dimnames, function(d) if (is.null(d)) "{}" else cpp_string_list(d), character(1L))
+  paste0("{", paste(dims, collapse = ", "), "}")
+}
+layout_allocator <- function(layout, real_type) {
+  switch(layout$base_type,
+    double = paste0("etr::numeric_of<", scalar_cpp(real_type), ">"),
+    integer = "etr::integer",
+    logical = "etr::logical"
+  )
+}
+cpp_string_list <- function(x) {
+  paste0("{", paste(encodeString(x, quote = "\""), collapse = ", "), "}")
+}
+
+borrow_type_spelling <- function(ds) {
+  switch(normalize_data_struct(ds),
+    borrow_vector = "borrow_vec(...)",
+    borrow_matrix = "borrow_mat(...)",
+    borrow_array = "borrow_array(...)",
     ds
-  }
-  is <- correct(is)
-  should <- correct(should)
-  should == is
+  )
+}
+# NOTE: allowed for function arguments; the C++ converting constructor copies
+borrow_to_owned <- function(is, should) {
+  is <- normalize_data_struct(is)
+  should <- normalize_data_struct(should)
+  should %in% c("vector", "matrix", "array") && is == paste0("borrow_", should)
 }
 
 base_type_rank <- function(bt) {
@@ -89,7 +140,7 @@ infix_ops <- c(
   "+","-","*","/","^","%%", "%/%",
   "==","!=","<","<=",">",">=",
   "&","&&","|","||","!","<-","=",
-  "[","[[", ":", "$"
+  "[","[[", ":", "$", "%in%"
 )
 
 not_infix_in_cpp <- c(
@@ -145,6 +196,15 @@ permitted_data_structs <- function(r_fct) {
   }
 }
 
+# C++ name of the scalar type. Always the alias ETR_REAL: outside of fns it is
+# the type of the translation (using ETR_REAL = etr::Dual; in assemble), inside
+# a fn functor its template parameter (development/Plans/scalar_type_parameter.md)
+SCALAR_CPP <- "ETR_REAL"
+scalar_cpp <- function(real_type) {
+  if (is.null(real_type)) return(NULL)
+  SCALAR_CPP
+}
+
 convert_base_type <- function(r_type, real_type) {
   type_list <- list(
     "void" = "void",
@@ -152,7 +212,7 @@ convert_base_type <- function(r_type, real_type) {
     "logical" = "etr::Logical",
     "bool" = "etr::Logical",
     "integer" = "etr::Integer", "int" = "etr::Integer",
-    "double" = real_type)
+    "double" = scalar_cpp(real_type))
   type_list[[r_type]]
 }
 
@@ -166,20 +226,20 @@ convert_types_to_etr_types <- function(base_type, data_struct, r_fct, real_type,
   }
   else if (any(data_struct == c("borrow_vector", "borrow_matrix", "borrow_vec", "borrow_mat", "borrow_array")) && !r_fct) {
     if (real_type == "etr::ReverseDouble") {
-      stop("You cannot use borrowed data structures in combination with reverse mode automatic differentiation")
+      stop("You cannot use borrowed data structures in combination with reverse mode automatic differentiation", call. = FALSE)
     }
     if (real_type == "etr::Dual") {
-      stop("You cannot use borrowed data structures in combination with forward mode automatic differentiation")
+      stop("You cannot use borrowed data structures in combination with forward mode automatic differentiation", call. = FALSE)
     }
     data_struct <- "etr::Array"
     return(paste0(indent, data_struct, "<", convert_base_type(base_type, real_type), ", etr::Borrow<", convert_base_type(base_type, real_type), ">>"))
   }
   else if (any(data_struct == c("borrow_vector", "borrow_matrix", "borrow_vec", "borrow_mat", "borrow_array")) && r_fct) {
     if (real_type == "etr::ReverseDouble") {
-      stop("You cannot use borrowed data structures in combination with reverse mode automatic differentiation")
+      stop("You cannot use borrowed data structures in combination with reverse mode automatic differentiation", call. = FALSE)
     }
     if (real_type == "etr::Dual") {
-      stop("You cannot use borrowed data structures in combination with forward mode automatic differentiation")
+      stop("You cannot use borrowed data structures in combination with forward mode automatic differentiation", call. = FALSE)
     }
     data_struct <- "etr::Array"
     return(paste0(indent, data_struct, "<", convert_base_type(base_type, real_type), ", etr::Borrow<", convert_base_type(base_type, real_type), ">>"))
@@ -209,18 +269,22 @@ r_fct_sig <- function() {
   combine_strings(
     c(
       "#include <Rcpp.h>",
-      "// [[Rcpp::depends(ast2ast)]]",
+      "// [[Rcpp::depends(ast2ast, RcppThread)]]",
       "// [[Rcpp::plugins(cpp2a)]]",
-      '#include "etr.hpp"\n'), "\n"
+      '#include "etr.hpp"',
+      '#include "a2a_sundials.hpp"',
+      ""), "\n"
   )
 }
 xptr_sig <- function() {
   combine_strings(
     c(
       "#include <Rcpp.h>",
-      "// [[Rcpp::depends(ast2ast)]]",
+      "// [[Rcpp::depends(ast2ast, RcppThread)]]",
       "// [[Rcpp::plugins(cpp2a)]]",
-      '#include "etr.hpp"\n',
+      '#include "etr.hpp"',
+      '#include "a2a_sundials.hpp"',
+      "",
       "// [[Rcpp::export]]",
       "SEXP getXPtr();\n"
     ),
@@ -238,6 +302,22 @@ remove_empty_strings <- function(l) {
 
 remove_double_quotes <- function(s) {
   gsub('"', "", s)
+}
+
+# RcppThread::LdFlags() cat()s the link flags on every sourceCpp
+# sink instead of capture.output: keeps the compiler errors if sourceCpp fails
+source_cpp_quiet <- function(code, verbose, env) {
+  out <- character()
+  con <- textConnection("out", "w", local = TRUE)
+  sink(con)
+  ok <- FALSE
+  on.exit({
+    sink()
+    close(con)
+    if (verbose || !ok) cat(out, sep = "\n")
+  })
+  Rcpp::sourceCpp(code = code, verbose = verbose, env = env)
+  ok <- TRUE
 }
 
 compile <- function(fct_code, r_fct,
@@ -261,9 +341,20 @@ compile <- function(fct_code, r_fct,
 
   # link R's BLAS/LAPACK so dgemm_ resolves on all platforms (Windows is strict)
   old_libs <- Sys.getenv("PKG_LIBS", unset = NA)
-  Sys.setenv(PKG_LIBS = "$(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)")
+  old_cpp <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
+  libs <- "$(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)"
+  # flags built here rather than via sundials::LdFlags() (which prints)
+  sun_lib <- system.file("lib", .Platform$r_arch, package = "sundials")
+  sun_inc <- system.file("include", package = "sundials")
+  libs <- paste0(libs, " -L", shQuote(sun_lib), " -lsundials")
+  Sys.setenv(PKG_CPPFLAGS = paste(
+    if (is.na(old_cpp)) "" else old_cpp,
+    paste0("-I", shQuote(sun_inc))
+  ))
+  Sys.setenv(PKG_LIBS = libs)
   on.exit({
     if (is.na(old_libs)) Sys.unsetenv("PKG_LIBS") else Sys.setenv(PKG_LIBS = old_libs)
+    if (is.na(old_cpp)) Sys.unsetenv("PKG_CPPFLAGS") else Sys.setenv(PKG_CPPFLAGS = old_cpp)
   }, add = TRUE)
 
   if (!r_fct) {
@@ -273,13 +364,13 @@ compile <- function(fct_code, r_fct,
           cat(fct)
         }
         env <- new.env()
-        Rcpp::sourceCpp(code = fct, verbose = verbose, env = env)
+        source_cpp_quiet(fct, verbose, env)
         fct_ret <- env$getXPtr()
         attributes(fct_ret) <- list(class = "XPtr")
       },
       error = function(e) {
         print(e)
-        stop("Sorry compilation failed!")
+        stop("Sorry compilation failed!", call. = FALSE)
       }
     )
   } else {
@@ -293,12 +384,12 @@ compile <- function(fct_code, r_fct,
     tryCatch(
       expr = {
         env <- new.env()
-        res <- Rcpp::sourceCpp(code = fct, verbose = verbose, env = env)
+        source_cpp_quiet(fct, verbose, env)
         fct_ret <- env[[name_f]]
       },
       error = function(e) {
         print(e)
-        stop("Sorry compilation failed!")
+        stop("Sorry compilation failed!", call. = FALSE)
       }
     )
 
@@ -365,7 +456,7 @@ resolve_type_collection <- function(code, env) {
     if (!is.null(env$new_type) && identical(env$new_type$name, elem)) {
       add_error(env, sprintf("Self-referencing types are not supported: %s cannot reference itself in its own slot definition", elem))
     } else {
-      add_error(env, sprintf("Found unsupported base type: %s", elem))
+      add_error(env, sprintf("Found unsupported base type: %s%s", elem, did_you_mean(elem, ops)))
     }
   }
   if (elem == "int") {
@@ -374,10 +465,17 @@ resolve_type_collection <- function(code, env) {
   elem
 }
 
+did_you_mean <- function(elem, candidates) {
+  if (length(candidates) == 0L) return("")
+  distance <- utils::adist(elem, candidates)[1L, ]
+  if (min(distance) > 2L) return("")
+  sprintf(". Did you mean '%s'?", candidates[which.min(distance)])
+}
+
 resolve_base_type <- function(code, env) {
   elem <- deparse(code)
   if (!(elem %in% permitted_base_types())) {
-    add_error(env, sprintf("Found unsupported base type: %s", elem))
+    add_error(env, sprintf("Found unsupported base type: %s%s", elem, did_you_mean(elem, permitted_base_types())))
   }
   if (elem == "int") {
     return("integer")

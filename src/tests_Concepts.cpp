@@ -14,7 +14,7 @@ void test_concepts() {
   b.set(1, 2.1);
   b.set(2, 3.1);
   Array<Double, Buffer<Double>> a(b);
-  a.dim = std::vector<std::size_t>{3};
+  a.dim = Dim{3};
   auto unary = -a;
   static_assert(IsUnary<decltype(unary.d)>, "Is unary");
   auto binary = a + a;
@@ -37,7 +37,7 @@ void test_concepts() {
 
   double* ptr = nullptr;
   std::size_t sz = 0;
-  std::vector<std::size_t> dim;
+  Dim dim;
   Array<Double, Borrow<Double, BorrowTrait>> a_borrow(ptr, sz, dim);
   Array<Double, Buffer<Double, RBufferTrait>> a_rbuf(SI{3});
   auto sub = subset(a, true);
@@ -83,7 +83,7 @@ void test_concepts() {
   static_assert(!IsRArray<decltype(sub)>,"Is not R Buffer Array: subset");
   static_assert(!IsRArray<decltype(a_borrow)>,"Is not R Buffer Array: borrow");
   static_assert(IsRArray<decltype(a_rbuf)>,"Is R Buffer Array: RBuffer");
-  static_assert(!IsRArray<decltype(const_sub)>,"Is not R Buffer: const subset");
+  static_assert(IsRArray<decltype(const_sub)>,"Is R Buffer: const subset");
 
   static_assert(!IsBorrowArray<decltype(a)>,"Is not Borrow Array: Buffer");
   static_assert(!IsBorrowArray<decltype(unary)>,"Is not Borrow Array: unary");
@@ -110,7 +110,7 @@ void test_concepts() {
   static_assert(!IsConstSubsetArray<decltype(sub)>,"Is not const Subset Array: subset");
   static_assert(!IsConstSubsetArray<decltype(a_borrow)>,"Is not const Subset Array: borrow");
   static_assert(!IsConstSubsetArray<decltype(a_rbuf)>,"Is not const Subset Array: RBuffer");
-  static_assert(IsConstSubsetArray<decltype(const_sub)>,"Is const Subset Array: const subset");
+  static_assert(!IsConstSubsetArray<decltype(const_sub)>,"Is not const Subset Array: const subset");
 
   static_assert(!IsUnaryArray<decltype(a)>,"Is not Unary Array: Buffer");
   static_assert(IsUnaryArray<decltype(unary)>,"Is Unary Array: unary");
@@ -146,7 +146,7 @@ void test_concepts() {
   static_assert(IsOperationArray<decltype(sub)>,"Is Operation Array: subset");
   static_assert(!IsOperationArray<decltype(a_borrow)>,"Is not Operation Array: borrow");
   static_assert(!IsOperationArray<decltype(a_rbuf)>,"Is not Operation Array: RBuffer");
-  static_assert(IsOperationArray<decltype(const_sub)>,"Is Operation Array: const subset");
+  static_assert(!IsOperationArray<decltype(const_sub)>,"Is not Operation Array: const subset");
 
   static_assert(!IsROrCalculationArray<decltype(a)>,"Is not ROrCalculation Array: Buffer");
   static_assert(IsROrCalculationArray<decltype(unary)>,"Is ROrCalculation Array: unary");
@@ -155,5 +155,5 @@ void test_concepts() {
   static_assert(IsROrCalculationArray<decltype(sub)>,"Is ROrCalculation Array: subset");
   static_assert(!IsROrCalculationArray<decltype(a_borrow)>,"Is not ROrCalculation Array: borrow");
   static_assert(IsROrCalculationArray<decltype(a_rbuf)>,"Is ROrCalculation Array: RBuffer");
-  static_assert(IsOperationArray<decltype(const_sub)>,"Is Operation Array: const subset");
+  static_assert(IsROrCalculationArray<decltype(const_sub)>,"Is ROrCalculation Array: const subset");
 }

@@ -1,4 +1,5 @@
 library(tinytest)
+if (!at_home()) exit_file("slow: compiles; runs at home / CI only")
 library(ast2ast)
 
 types_point <- function() {
@@ -98,7 +99,7 @@ r_char <- function() {
   add <- fn(argtypes(a |> type(double), b |> type(double)), return(double), { return(a + b) })
   return(Reduce(add, "abc"))
 }
-expect_error(translate(r_char, getsource = TRUE), pattern = "character entries in Reduce")
+expect_error(translate(r_char, getsource = TRUE), pattern = "character/NA/NaN/Inf entries in x type in: Reduce", fixed = TRUE)
 
 # =============================== Filter ===============================
 expect_equal(c(fcpp(4L, v, ivd)), Filter(function(e) e > 0, v))     # keep positives
@@ -131,4 +132,4 @@ flt_char <- function() {
   return(Filter(keep, "abc"))
 }
 expect_error(translate(flt_char, getsource = TRUE),
-  pattern = "Filter only supports vectors")
+  pattern = "character/NA/NaN/Inf entries in x type in: Filter", fixed = TRUE)
