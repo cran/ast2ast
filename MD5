@@ -1,6 +1,6 @@
-38537e02f2c9ba2d0a01b853c29d3d57 *DESCRIPTION
+b8d325d9f8e045a6815737d8eb655ca7 *DESCRIPTION
 a6ca7f9083f711ad78a8a582ea45cb26 *NAMESPACE
-15d164abf1cd95245e72f2c477cd432a *NEWS
+a0dc05c4347a0f5f15a5b9f23786200f *NEWS
 ef5cc35c1f651fef1722c4b1b30baea6 *R/Colouring.R
 450090e543700cfa2d1a73fe37472bdb *R/CreateNodeAST.R
 f73ba8c96d60e298d428fdc113608377 *R/FunctionRegistry.R
@@ -53,7 +53,7 @@ e0ff25c6dc1ad08d128952b306452e91 *inst/include/etr_bits/Core/Scalars.hpp
 71ccd23f29af5f5589106d562f885f6a *inst/include/etr_bits/Core/Solve.hpp
 0134432c5a249d82a4b4deed7a5861e2 *inst/include/etr_bits/Core/Transpose.hpp
 4658c4b06b7dcd901ba1a57e377584bd *inst/include/etr_bits/Core/TriSolve.hpp
-8d4a224257eec2c45734436445bff422 *inst/include/etr_bits/Core/Types.hpp
+ac92aa5dc36855fd390914d44f743b29 *inst/include/etr_bits/Core/Types.hpp
 c9084529b589af0769bea411374fce2f *inst/include/etr_bits/Core/Uniroot.hpp
 a039251371586da4ff9c7768f2a1e7a0 *inst/include/etr_bits/Core/nnls.hpp
 04b7f7b679671968524c4e005d7bae01 *inst/include/etr_bits/Derivatives.hpp

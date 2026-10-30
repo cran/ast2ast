@@ -1,8 +1,8 @@
 Package: ast2ast
 Type: Package
 Title: Translates an R Function to a C++ Function
-Version: 1.1.1
-Date: 2026-10-26
+Version: 1.1.2
+Date: 2026-10-28
 Authors@R: c(person(given = "Krämer",
       family = "Konrad",
       role = c("aut", "cre"),
@@ -21,7 +21,7 @@ VignetteBuilder: knitr
 Suggests: knitr, kableExtra, rmarkdown, tinytest, microbenchmark,
         ggplot2, RcppXPtrUtils, pkgbuild, nnls, Matrix
 Encoding: UTF-8
-Packaged: 2026-10-26 13:10:57 UTC; konrad
+Packaged: 2026-10-29 06:40:41 UTC; konrad
 Author: Krämer Konrad [aut, cre]
 Repository: CRAN
-Date/Publication: 2026-10-26 14:30:21 UTC
+Date/Publication: 2026-10-30 13:40:46 UTC
